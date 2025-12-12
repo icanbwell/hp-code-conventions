@@ -35,7 +35,7 @@
 ### Application Layer:
 
 - CAN depend on Domain Layer
-- CAN depend on Infrastructure Layer
+- CANNOT depend on Infrastructure Layer
 - Acts as a mediator
 
 ### Infrastructure Layer:
