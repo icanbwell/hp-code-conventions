@@ -20,7 +20,7 @@
 ## Infrastructure:
 
 - Contains implementations for external systems
-- Handles technical details like messaging, data access, and external apis
+- Handles technical details like messaging, data access, and external APIs
 - Concrete strategy implementations reside here, encapsulating the interactions with external systems
 
 ## Strict Dependency Rules:
