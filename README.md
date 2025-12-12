@@ -5,3 +5,6 @@ This repo is meant to house code convention configuration files that different r
 Configure local Intellij IDE to point to this repo with the following configuration 
 ![image](https://github.com/icanbwell/hp-code-conventions/assets/8305608/06d26e27-4a24-4c48-94ca-74cf377175b3)
 
+## Reference documents
+- [Coding Standards](docs/standards/CODING_STANDARDS.md)
+- [Hexagonal architecture for Java projects](docs/standards/HEXAGONAL_ARCHITECTURE_FOR_JAVA_PROJECTS.md)
