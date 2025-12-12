@@ -1,6 +1,4 @@
-# Coding standards
-
-# Style Guide
+# Coding Standards and Style Guide
 
 [Code Conventions](https://raw.githubusercontent.com/icanbwell/hp-code-conventions/refs/heads/main/checkstyle/config/checkstyle.xml)
 
@@ -25,7 +23,7 @@ Message naming (cloud event `type`)
 
 - Prefer PR reviewer to "resolve" PR comments
 - If the reviewer approves PR but leaves comments then comments are optional
-- if the reviewer requests changes and leaves comments then a re-review is required
+- If the reviewer requests changes and leaves comments then a re-review is required
 - Give a general context in the PR (AI will generate a summary but those can be complemented)
 - Use {ticket-number} {action} {context} eg: EA-145 Updated model Foo
 
