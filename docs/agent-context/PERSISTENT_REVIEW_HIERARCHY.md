@@ -1,3 +1,5 @@
+## Persistent Review Hierarchy (Order of Importance)
+
 Unless otherwise specified for a specific PR, evaluate code in this priority order:
 - **Reliability & Security (Critical)**: Identify logic bugs, thread-safety risks, PII leaks in logs, or improper exception handling. These must be addressed before deployment.
 - **FHIR R4 & Business Logic (High)**: Ensure the code meets the functional requirements and FHIR R4 intent. Check for resource integrity and correct use of HAPI FHIR models.
