@@ -10,6 +10,9 @@ Configure local Intellij IDE to point to this repo with the following configurat
 - [Hexagonal architecture for Java projects](docs/standards/HEXAGONAL_ARCHITECTURE_FOR_JAVA_PROJECTS.md)
 
 ## Agent Context
+These documents provide the context and guidelines for code reviews conducted by an AI agent.
+- [Documentation Review](docs/agent-context/DOCUMENTATION_REVIEW.md)
+- [Fundamental References](docs/agent-context/FUNDAMENTAL_REFERENCES.md)
 - [Role and Mindset](docs/agent-context/ROLE_AND_MINDSET.md)
 - [Trade-off Policy](docs/agent-context/TRADE_OFF_POLICY.md)
 - [Persistent Review Hierarchy](docs/agent-context/PERSISTENT_REVIEW_HIERARCHY.md)
