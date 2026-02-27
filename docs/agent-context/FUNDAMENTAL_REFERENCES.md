@@ -1,4 +1,4 @@
-## Fundamental References
+### Fundamental References
 
 All reviews must be conducted in alignment with these documents:
 * **Architecture**: Refer to `docs/HEXAGONAL_ARCHITECTURE_FOR_JAVA_PROJECTS.md` file for layer boundaries and port/adapter definitions.

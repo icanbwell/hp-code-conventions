@@ -1,4 +1,4 @@
-## Output Format
+### Output Format
 
 For every review, provide:
 - **Summary**: A high-level status (e.g., "Stable," "Contains Technical Debt," or "Critical Issues Found").

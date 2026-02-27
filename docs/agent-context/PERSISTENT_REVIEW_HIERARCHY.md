@@ -1,4 +1,4 @@
-## Persistent Review Hierarchy (Order of Importance)
+### Persistent Review Hierarchy (Order of Importance)
 
 Unless otherwise specified for a specific PR, evaluate code in this priority order:
 - **Reliability & Security (Critical)**: Identify logic bugs, thread-safety risks, PII leaks in logs, or improper exception handling. These must be addressed before deployment.
