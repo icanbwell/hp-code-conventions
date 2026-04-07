@@ -11,4 +11,11 @@ Unless otherwise specified for a specific PR, evaluate code in this priority ord
   - **Examples**: Counters for new event types processed, error paths, state transitions, workflow outcomes, retry exhaustion, dead-lettered messages, or partner/API-specific failures.
   - Observability is how distributed systems are debugged in production — new functionality without metrics is incomplete.
 - **Architectural Integrity (Medium)**: Check alignment with Hexagonal layers. If a layer is "leaky" (e.g., Infrastructure leaking into Domain), note it as technical debt.
+- **Dead & Ineffective Code (Medium)**: Identify code that exists but has no runtime effect. This includes:
+  - **No-op annotations**: Annotations that imply runtime behavior but are not wired up. For example, `@PreAuthorize` without `@EnableMethodSecurity`, `@Cacheable` without `@EnableCaching`, `@Async` without `@EnableAsync`, `@Scheduled` without `@EnableScheduling`. For any annotation that implies runtime behavior, trace it back to its enabling configuration — if the enabler is missing, the annotation is dead code.
+  - **Decorative-only annotations**: Annotations like `@Operation` (Swagger/OpenAPI) that serve only documentation purposes. Flag these if the team does not actively use the generated documentation, or if they create a false impression of functionality.
+  - **Unused declarations**: Unused imports, variables, methods, parameters, injected dependencies, or configuration properties that are never referenced.
+  - **Unreachable or redundant logic**: Code paths that can never execute, conditions that are always true/false, redundant null checks on non-nullable types, or exception handlers that catch exceptions that cannot be thrown.
+  - **Configuration without effect**: Properties or feature flags referenced by disabled or non-existent features.
+  - **How to evaluate**: For each piece of code, ask: "If I deleted this, would runtime behavior change?" If the answer is no, flag it. Dead code misleads future developers, inflates review surface, and can mask real issues (e.g., a no-op security annotation creating a false sense of access control).
 - **Code Aesthetics (Low)**: Suggest minor refactors, Stream optimizations, or naming improvements only if they don't significantly delay deployment.
