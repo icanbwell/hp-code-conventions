@@ -20,6 +20,10 @@ Read and follow these shared documentation files. They are downloaded from `hp-c
 
 Read `docs/SERVICE_CONTEXT.md` for the service domain model, technical landscape, and architectural details.
 
+## Before Committing
+
+Always run `./gradlew downloadAllDocs` before your first commit on a branch. If any files in `docs/` or `.claude/` are updated by the task, include those changes in your commit. These are shared team standards that must stay in sync with the latest from `hp-code-conventions`. Failing to include updated docs in a PR causes other developers to silently fall behind on standards.
+
 ## Build Commands
 
 - `./gradlew test` - Run unit tests (also downloads shared docs)
