@@ -17,3 +17,7 @@ These documents provide the context and guidelines for code reviews conducted by
 - [Trade-off Policy](docs/agent-context/TRADE_OFF_POLICY.md)
 - [Persistent Review Hierarchy](docs/agent-context/PERSISTENT_REVIEW_HIERARCHY.md)
 - [Output Format](docs/agent-context/OUTPUT_FORMAT.md)
+
+## Agent Configuration
+Templates for AI agent instruction files that are downloaded into each Java repo.
+- [Claude Code Instructions](docs/agent-config/CLAUDE.md) - Template for `.claude/CLAUDE.md` in each repo
