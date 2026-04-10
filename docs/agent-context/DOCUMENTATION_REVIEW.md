@@ -7,10 +7,10 @@ In every PR code review:
     - If the `README.md` is missing updates, flag this in the review and suggest what sections need to be updated.
     - Check if new dependencies, environment variables, or setup steps require `README.md` documentation.
 3. **In-Repo Documentation, Diagrams & Design Docs**:
-    - Scan the `docs/` directory (and subdirectories like `docs/design/`, `docs/specs/`, `docs/plans/`) for existing documentation that describes behavior being changed in the PR. This includes architecture overviews, state machine guides, flow diagrams, sequence diagrams, and design decision documents.
-    - If the PR changes state transitions, event flows, FSM configuration, domain model structure, service interactions, or coordination patterns, check whether any existing doc describes the affected behavior and flag if it needs updating.
+    - Scan for all `*.md` and `*.mmd` files across the entire repository, not just the `docs/` directory. Documentation and diagrams may live alongside the code they describe (e.g., a `README.md` in a module directory, a `.mmd` Mermaid diagram next to the service it documents). Common locations include `docs/`, `docs/design/`, `docs/specs/`, `docs/plans/`, `adrs/`, and the repo root, but do not limit the search to these paths.
+    - If the PR changes state transitions, event flows, FSM configuration, domain model structure, service interactions, or coordination patterns, check whether any existing doc or diagram describes the affected behavior and flag if it needs updating.
     - If the PR adds a new state, event type, Kafka topic, consumer, or workflow path that is not reflected in existing documentation, flag the gap and suggest which doc should be updated (or whether a new doc is warranted).
-    - Pay particular attention to Mermaid diagrams (state diagrams, sequence diagrams, flowcharts) embedded in markdown files — these become stale silently and mislead future developers.
+    - Pay particular attention to Mermaid diagrams — both standalone `.mmd` files and Mermaid code blocks embedded in markdown files. These become stale silently and mislead future developers.
     - **ADRs** (`adrs/` directory): If the PR introduces a new architectural pattern, library, or significant trade-off, check whether an ADR exists or should be created.
 4. **API Contract Specifications**:
     - **AsyncAPI** (`asyncApi.yaml` or similar): If the PR adds, removes, or modifies Kafka events (new event types, changed payload schemas, new topics, altered CloudEvents headers), verify the AsyncAPI specification is updated in the same PR. Event schema changes without contract updates break downstream consumers silently.
