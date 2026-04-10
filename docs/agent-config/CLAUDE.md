@@ -1,4 +1,4 @@
-# {{SERVICE_NAME}} - Java Team Agent Instructions
+# Java Team Agent Instructions
 
 > **Scope:** Repo-level extension. Layers on top of the org-wide baseline in the root `CLAUDE.md`.
 > **Owner:** Java Services Team
