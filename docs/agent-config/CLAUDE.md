@@ -29,7 +29,7 @@ Always run `./gradlew downloadAllDocs` before your first commit on a branch. If 
 - `./gradlew test` - Run unit tests (also downloads shared docs)
 - `./gradlew itest` - Run integration tests
 - `./gradlew build` - Full build
-- `./gradlew checkstyleMain` - Run checkstyle
+- `./gradlew checkstyleMain` - Run checkstyle (if configured in the repo)
 - `./gradlew auditVersionPins` - Check if forced dependency pins can be removed by upgrading the Spring Boot BOM
 
 ## Dependency Version Pin Hygiene
