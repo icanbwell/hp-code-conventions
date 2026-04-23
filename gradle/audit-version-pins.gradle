@@ -3,13 +3,9 @@
  * whether a newer Spring Boot BOM (or other parent BOM) would resolve those deps
  * to the pinned version or higher, making the pin removable.
  *
- * Usage (option A — download via Gradle task, preferred):
- *   Add to downloadAllDocs or a separate downloadGradleScripts task that pulls this file
- *   from hp-code-conventions into gradle/audit-version-pins.gradle, then:
+ * Distributed via the downloadAllDocs pattern — each repo downloads this file into
+ * gradle/audit-version-pins.gradle and applies it locally:
  *     apply from: 'gradle/audit-version-pins.gradle'
- *
- * Usage (option B — apply directly from GitHub):
- *   apply from: 'https://raw.githubusercontent.com/icanbwell/hp-code-conventions/main/gradle/audit-version-pins.gradle'
  *
  * Then run:
  *   ./gradlew auditVersionPins
@@ -20,12 +16,18 @@
  */
 
 import groovy.xml.XmlSlurper
+import java.util.regex.Matcher
 
 tasks.register('auditVersionPins') {
     group = 'verification'
     description = 'Checks if newer BOM versions would resolve forced dependency pins'
 
     doLast {
+        if (gradle.startParameter.offline) {
+            logger.lifecycle("\n⚠ Gradle is in offline mode. Skipping auditVersionPins (requires Maven Central access).")
+            return
+        }
+
         def pins = detectVersionPins(project)
         if (pins.isEmpty()) {
             logger.lifecycle("\n✓ No forced version pins detected in build.gradle.")
@@ -44,7 +46,7 @@ tasks.register('auditVersionPins') {
         }
         logger.lifecycle("\n── Current Spring Boot version: ${currentBootVersion}")
 
-        def newerVersions = fetchNewerSpringBootVersions(currentBootVersion, project)
+        def newerVersions = fetchNewerSpringBootVersions(currentBootVersion)
         if (newerVersions.isEmpty()) {
             logger.lifecycle("  No newer Spring Boot versions found on Maven Central.")
             return
@@ -91,9 +93,6 @@ tasks.register('auditVersionPins') {
 
         def stillPinned = pins.findAll { !removablePins.containsKey(pinKey(it)) }
 
-        // For pins not resolvable via Spring Boot BOM, check if upgrading the direct
-        // parent dependency would transitively include the pinned version.
-        // E.g., upgrading HAPI FHIR might bring in a fixed org.hl7.fhir.core version.
         if (!stillPinned.isEmpty()) {
             def parentUpgrades = checkParentDependencyUpgrades(project, stillPinned)
             if (!parentUpgrades.isEmpty()) {
@@ -135,10 +134,8 @@ tasks.named('check') {
 // ── Pin Detection ──────────────────────────────────────────────────────────────
 
 /**
- * Scans the project's configurations for eachDependency forced versions
- * and ext property overrides that follow Spring Boot's naming convention.
- *
- * Returns a list of maps: [group, name, forcedVersion, reason, type]
+ * Scans build.gradle text for eachDependency forced versions and ext property
+ * overrides that follow Spring Boot's naming convention.
  */
 def detectVersionPins(Project project) {
     def pins = []
@@ -148,12 +145,11 @@ def detectVersionPins(Project project) {
     def lines = buildFile.readLines()
 
     // Pattern 1: resolutionStrategy.eachDependency forced version blocks
-    // Parses the if-block line by line to find group, name, useVersion, because
     String currentGroup = null
     String currentName = null
     boolean inIfBlock = false
 
-    lines.each { line ->
+    lines.eachWithIndex { line, idx ->
         def stripped = line.trim()
 
         def ifMatch = (stripped =~ /if\s*\(\s*details\.requested\.group\s*==\s*['"]([^'"]+)['"]/)
@@ -174,15 +170,11 @@ def detectVersionPins(Project project) {
             def versionMatch = (stripped =~ /details\.useVersion\s+['"]([^'"]+)['"]/)
             if (versionMatch) {
                 def version = versionMatch[0][1]
-                def becauseMatch = null
-                // Look for because on same line or scan ahead
                 def becauseLine = (stripped =~ /details\.because\s+['"]([^'"]+)['"]/)
                 def reason = becauseLine ? becauseLine[0][1] : null
 
                 if (!reason) {
-                    // Check next few lines for the because clause
-                    def lineIdx = lines.indexOf(line)
-                    for (int i = lineIdx + 1; i < Math.min(lineIdx + 3, lines.size()); i++) {
+                    for (int i = idx + 1; i < Math.min(idx + 3, lines.size()); i++) {
                         def nextBecause = (lines[i].trim() =~ /details\.because\s+['"]([^'"]+)['"]/)
                         if (nextBecause) {
                             reason = nextBecause[0][1]
@@ -209,19 +201,16 @@ def detectVersionPins(Project project) {
     }
 
     // Pattern 2: ext.set version overrides that are security pins
-    // Spring Boot's dependency-management plugin uses property names like 'thymeleaf.version'
-    // to override BOM-managed versions. We only flag these as pins if they have a CVE/GHSA
-    // comment, distinguishing security overrides from normal version declarations.
+    // Only flags properties with CVE/GHSA/security comments to distinguish from normal version declarations.
     lines.each { line ->
         def stripped = line.trim()
-        def extMatch = (stripped =~ /set\(\s*['"]([^'"]+)\.version['"]\s*,\s*['"]([^'"]+)['"]\s*\)/)
-        if (extMatch) {
-            def artifactHint = extMatch[0][1]
-            def version = extMatch[0][2]
+        Matcher extMatcher = (stripped =~ /set\(\s*['"]([^'"]+)\.version['"]\s*,\s*['"]([^'"]+)['"]\s*\)/)
+        if (extMatcher.find()) {
+            def artifactHint = extMatcher.group(1)
+            def version = extMatcher.group(2)
             def commentMatch = (stripped =~ /\/\/\s*(.+)$/)
             def comment = commentMatch ? commentMatch[0][1].trim() : null
 
-            // Only treat as a pin if there's a CVE/GHSA/security comment
             if (comment && (comment.toUpperCase().contains('CVE') ||
                             comment.toUpperCase().contains('GHSA') ||
                             comment.toLowerCase().contains('security'))) {
@@ -251,29 +240,21 @@ def detectSpringBootVersion(Project project) {
 
 // ── Maven Central Queries ──────────────────────────────────────────────────────
 
-/**
- * Fetches Spring Boot versions newer than the current one from Maven Central.
- * Stays within the same major.minor series (e.g., 3.5.x) by default,
- * but also checks the next minor (e.g., 3.6.x) if available.
- */
-def fetchNewerSpringBootVersions(String currentVersion, Project project) {
+def fetchNewerSpringBootVersions(String currentVersion) {
     def parts = currentVersion.tokenize('.')
     if (parts.size() < 3) return []
 
     def major = parts[0]
     def minor = parts[1]
-    def patch = parts[2] as int
 
     def versions = []
 
-    // Fetch same minor series
     versions.addAll(fetchVersionsFromMavenCentral(
         'org.springframework.boot',
         'spring-boot-starter-parent',
         "${major}.${minor}"
     ))
 
-    // Also check next minor
     def nextMinor = (minor as int) + 1
     versions.addAll(fetchVersionsFromMavenCentral(
         'org.springframework.boot',
@@ -291,7 +272,10 @@ def fetchVersionsFromMavenCentral(String group, String artifact, String versionP
     def metadataUrl = "https://repo1.maven.org/maven2/${groupPath}/${artifact}/maven-metadata.xml"
 
     try {
-        def metadata = new XmlSlurper().parseText(new URL(metadataUrl).text)
+        def conn = new URL(metadataUrl).openConnection()
+        conn.connectTimeout = 5000
+        conn.readTimeout = 10000
+        def metadata = new XmlSlurper().parseText(conn.inputStream.text)
         return metadata.versioning.versions.version
             .collect { it.text() }
             .findAll { it.startsWith(versionPrefix) }
@@ -303,38 +287,26 @@ def fetchVersionsFromMavenCentral(String group, String artifact, String versionP
 
 // ── Detached Resolution ────────────────────────────────────────────────────────
 
-/**
- * Creates a throwaway Gradle configuration with a specific Spring Boot BOM version,
- * adds the target dependency, and resolves it to see what version the BOM provides.
- */
 def resolveWithBom(Project project, String bootVersion, String group, String artifactName) {
+    def platformDep = project.dependencies.platform(
+        "org.springframework.boot:spring-boot-dependencies:${bootVersion}")
+
+    def resolveArtifact = artifactName.endsWith('*')
+        ? artifactName.replace('*', 'r4')
+        : artifactName
+
+    def targetDep = project.dependencies.create("${group}:${resolveArtifact}")
+
+    def detached = project.configurations.detachedConfiguration(platformDep, targetDep)
+    detached.transitive = true
+
     try {
-        def configName = "auditProbe_${bootVersion.replace('.', '_')}_${artifactName.replace('.', '_')}_${System.nanoTime()}"
-
-        def detached = project.configurations.create(configName) {
-            canBeConsumed = false
-            canBeResolved = true
-            transitive = true
-        }
-
-        project.dependencies.add(configName,
-            project.dependencies.platform("org.springframework.boot:spring-boot-dependencies:${bootVersion}"))
-
-        // For wildcard pins (e.g., org.hl7.fhir.*), pick a representative artifact
-        def resolveArtifact = artifactName.endsWith('*')
-            ? artifactName.replace('*', 'r4')
-            : artifactName
-
-        project.dependencies.add(configName, "${group}:${resolveArtifact}")
-
         def resolved = detached.resolvedConfiguration.resolvedArtifacts.find {
             it.moduleVersion.id.group == group &&
             (artifactName.endsWith('*')
                 ? it.moduleVersion.id.name.startsWith(artifactName.replace('*', ''))
                 : it.moduleVersion.id.name == resolveArtifact)
         }
-
-        project.configurations.remove(detached)
         return resolved?.moduleVersion?.id?.version
     } catch (Exception e) {
         return null
@@ -347,23 +319,18 @@ def resolveWithBom(Project project, String bootVersion, String group, String art
  * For pins that target transitive dependencies (e.g., org.hl7.fhir.* forced to 6.9.0),
  * checks whether upgrading the direct parent dependency (e.g., hapi-fhir-structures-r4)
  * would bring in the pinned version transitively, eliminating the need for the force.
- *
- * Detects the parent by scanning build.gradle for direct dependency declarations
- * that share the same group as the pin, then checks newer versions of that parent.
  */
 def checkParentDependencyUpgrades(Project project, List pins) {
     def results = []
     def buildContent = project.file('build.gradle').text
 
     pins.each { pin ->
-        // Find direct dependencies in build.gradle with the same group
         def directDeps = findDirectDependencies(buildContent, pin.group)
         if (directDeps.isEmpty()) return
 
         def parentArtifact = directDeps.first()
         def currentParentVersion = parentArtifact.version
 
-        // Fetch newer versions of the parent artifact
         def newerParentVersions = fetchNewerVersionsOf(
             parentArtifact.group, parentArtifact.name, currentParentVersion
         )
@@ -394,29 +361,30 @@ def checkParentDependencyUpgrades(Project project, List pins) {
 def findDirectDependencies(String buildContent, String group) {
     def deps = []
     def seen = [] as Set
+    def quotedGroup = java.util.regex.Pattern.quote(group)
 
     // Pattern: implementation "group:artifact:${varName}"
-    def varPattern = ~/(?:implementation|api|compileOnly)\s+["']${java.util.regex.Pattern.quote(group)}:([^:'"]+):\$\{(\w+)\}["']/
-    buildContent.findAll(varPattern) { match ->
-        def artifactName = match[1]
-        def varName = match[2]
-        def varValue = (buildContent =~ /set\(\s*['"]${varName}['"]\s*,\s*['"]([^'"]+)['"]\s*\)/)
-        if (varValue) {
+    Matcher varMatcher = buildContent =~ /(?:implementation|api|compileOnly)\s+["']${quotedGroup}:([^:'"]+):\$\{(\w+)\}["']/
+    while (varMatcher.find()) {
+        def artifactName = varMatcher.group(1)
+        def varName = varMatcher.group(2)
+        Matcher varValue = buildContent =~ /set\(\s*['"]${varName}['"]\s*,\s*['"]([^'"]+)['"]\s*\)/
+        if (varValue.find()) {
             def key = "${group}:${artifactName}"
             if (!seen.contains(key)) {
                 seen << key
-                deps << [group: group, name: artifactName, version: varValue[0][1]]
+                deps << [group: group, name: artifactName, version: varValue.group(1)]
             }
         }
     }
 
     // Pattern: implementation "group:artifact:1.2.3" (literal version, no variable)
-    def literalPattern = ~/(?:implementation|api|compileOnly)\s+['"]${java.util.regex.Pattern.quote(group)}:([^:'"]+):([^'"\$]+)['"]/
-    buildContent.findAll(literalPattern) { match ->
-        def key = "${group}:${match[1]}"
+    Matcher litMatcher = buildContent =~ /(?:implementation|api|compileOnly)\s+['"]${quotedGroup}:([^:'"]+):([^'"\$]+)['"]/
+    while (litMatcher.find()) {
+        def key = "${group}:${litMatcher.group(1)}"
         if (!seen.contains(key)) {
             seen << key
-            deps << [group: group, name: match[1], version: match[2]]
+            deps << [group: group, name: litMatcher.group(1), version: litMatcher.group(2)]
         }
     }
 
@@ -431,9 +399,7 @@ def fetchNewerVersionsOf(String group, String artifact, String currentVersion) {
     def minor = parts[1]
 
     def versions = []
-    // Same minor
     versions.addAll(fetchVersionsFromMavenCentral(group, artifact, "${major}.${minor}"))
-    // Next minor
     def nextMinor = (minor as int) + 1
     versions.addAll(fetchVersionsFromMavenCentral(group, artifact, "${major}.${nextMinor}"))
 
@@ -442,23 +408,13 @@ def fetchNewerVersionsOf(String group, String artifact, String currentVersion) {
         .sort { a, b -> compareVersions(a, b) }
 }
 
-/**
- * Resolves a parent dependency at a candidate version and checks what version
- * of the target transitive dependency it brings in.
- */
 def resolveTransitiveDep(Project project, String parentGroup, String parentArtifact,
                           String parentVersion, String targetGroup, String targetName) {
+    def parentDep = project.dependencies.create("${parentGroup}:${parentArtifact}:${parentVersion}")
+    def detached = project.configurations.detachedConfiguration(parentDep)
+    detached.transitive = true
+
     try {
-        def configName = "auditTransitive_${parentVersion.replace('.', '_')}_${System.nanoTime()}"
-
-        def detached = project.configurations.create(configName) {
-            canBeConsumed = false
-            canBeResolved = true
-            transitive = true
-        }
-
-        project.dependencies.add(configName, "${parentGroup}:${parentArtifact}:${parentVersion}")
-
         def resolveTarget = targetName.endsWith('*')
             ? targetName.replace('*', 'r4')
             : targetName
@@ -469,8 +425,6 @@ def resolveTransitiveDep(Project project, String parentGroup, String parentArtif
                 ? it.moduleVersion.id.name.startsWith(targetName.replace('*', ''))
                 : it.moduleVersion.id.name == resolveTarget)
         }
-
-        project.configurations.remove(detached)
         return resolved?.moduleVersion?.id?.version
     } catch (Exception e) {
         return null
