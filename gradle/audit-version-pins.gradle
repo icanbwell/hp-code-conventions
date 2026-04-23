@@ -1,0 +1,465 @@
+/**
+ * Audit Version Pins — discovers forced dependency overrides in build.gradle and checks
+ * whether a newer Spring Boot BOM (or other parent BOM) would resolve those deps
+ * to the pinned version or higher, making the pin removable.
+ *
+ * Distributed via the downloadAllDocs pattern — each repo downloads this file into
+ * gradle/audit-version-pins.gradle and applies it locally:
+ *     apply from: 'gradle/audit-version-pins.gradle'
+ *
+ * Then run:
+ *   ./gradlew auditVersionPins
+ *
+ * The task reads the project's current Spring Boot plugin version, queries Maven Central
+ * for newer patch/minor releases, resolves the pinned dependencies against each candidate
+ * BOM, and reports which upgrades would eliminate which pins.
+ */
+
+import groovy.xml.XmlSlurper
+import java.util.regex.Matcher
+
+tasks.register('auditVersionPins') {
+    group = 'verification'
+    description = 'Checks if newer BOM versions would resolve forced dependency pins'
+
+    doLast {
+        if (gradle.startParameter.offline) {
+            logger.lifecycle("\n⚠ Gradle is in offline mode. Skipping auditVersionPins (requires Maven Central access).")
+            return
+        }
+
+        def pins = detectVersionPins(project)
+        if (pins.isEmpty()) {
+            logger.lifecycle("\n✓ No forced version pins detected in build.gradle.")
+            return
+        }
+
+        logger.lifecycle("\n── Detected version pins ─────────────────────────")
+        pins.each { pin ->
+            logger.lifecycle("  ${pin.group}:${pin.name} → ${pin.forcedVersion}  (${pin.reason})")
+        }
+
+        def currentBootVersion = detectSpringBootVersion(project)
+        if (!currentBootVersion) {
+            logger.lifecycle("\n⚠ Could not detect Spring Boot plugin version. Skipping BOM upgrade check.")
+            return
+        }
+        logger.lifecycle("\n── Current Spring Boot version: ${currentBootVersion}")
+
+        def newerVersions = fetchNewerSpringBootVersions(currentBootVersion)
+        if (newerVersions.isEmpty()) {
+            logger.lifecycle("  No newer Spring Boot versions found on Maven Central.")
+            return
+        }
+        logger.lifecycle("  Candidate upgrades: ${newerVersions.join(', ')}")
+
+        logger.lifecycle("\n── Pin resolution analysis ───────────────────────")
+
+        def removablePins = [:]
+
+        newerVersions.each { candidateVersion ->
+            pins.each { pin ->
+                if (removablePins.containsKey(pinKey(pin))) return
+
+                def resolvedVersion = resolveWithBom(project, candidateVersion, pin.group, pin.name)
+                if (resolvedVersion && isVersionSufficient(resolvedVersion, pin.forcedVersion)) {
+                    removablePins[pinKey(pin)] = [
+                        pin: pin,
+                        resolvedBy: candidateVersion,
+                        bomResolvesTo: resolvedVersion
+                    ]
+                }
+            }
+        }
+
+        logger.lifecycle("")
+        if (removablePins.isEmpty()) {
+            logger.lifecycle("  No pins can be removed by upgrading Spring Boot to any available version.")
+            logger.lifecycle("  Tested up to: ${newerVersions.last()}")
+        } else {
+            logger.lifecycle("  ┌─────────────────────────────────────────────────────────────────┐")
+            logger.lifecycle("  │ REMOVABLE PINS                                                  │")
+            logger.lifecycle("  ├─────────────────────────────────────────────────────────────────┤")
+            removablePins.values().each { result ->
+                def pin = result.pin
+                logger.lifecycle("  │ ${pin.group}:${pin.name}")
+                logger.lifecycle("  │   Pinned to:  ${pin.forcedVersion}")
+                logger.lifecycle("  │   BOM gives:  ${result.bomResolvesTo}  (Spring Boot ${result.resolvedBy})")
+                logger.lifecycle("  │   Action:     Upgrade Spring Boot ${currentBootVersion} → ${result.resolvedBy}, remove pin")
+                logger.lifecycle("  │")
+            }
+            logger.lifecycle("  └─────────────────────────────────────────────────────────────────┘")
+        }
+
+        def stillPinned = pins.findAll { !removablePins.containsKey(pinKey(it)) }
+
+        if (!stillPinned.isEmpty()) {
+            def parentUpgrades = checkParentDependencyUpgrades(project, stillPinned)
+            if (!parentUpgrades.isEmpty()) {
+                logger.lifecycle("")
+                logger.lifecycle("  ┌─────────────────────────────────────────────────────────────────┐")
+                logger.lifecycle("  │ REMOVABLE VIA PARENT DEPENDENCY UPGRADE                         │")
+                logger.lifecycle("  ├─────────────────────────────────────────────────────────────────┤")
+                parentUpgrades.each { result ->
+                    def pin = result.pin
+                    logger.lifecycle("  │ ${pin.group}:${pin.name}")
+                    logger.lifecycle("  │   Pinned to:     ${pin.forcedVersion}")
+                    logger.lifecycle("  │   Parent lib:    ${result.parentGroup}:${result.parentArtifact}")
+                    logger.lifecycle("  │   Current ver:   ${result.currentParentVersion}")
+                    logger.lifecycle("  │   Upgrade to:    ${result.upgradeParentVersion}  (resolves transitive to ${result.transitiveVersion})")
+                    logger.lifecycle("  │   Action:        Upgrade ${result.parentArtifact} ${result.currentParentVersion} → ${result.upgradeParentVersion}, remove pin")
+                    logger.lifecycle("  │")
+                    removablePins[pinKey(pin)] = result
+                }
+                logger.lifecycle("  └─────────────────────────────────────────────────────────────────┘")
+            }
+        }
+
+        stillPinned = pins.findAll { !removablePins.containsKey(pinKey(it)) }
+        if (!stillPinned.isEmpty()) {
+            logger.lifecycle("")
+            logger.lifecycle("  Still required (no available upgrade resolves these):")
+            stillPinned.each { pin ->
+                logger.lifecycle("    ${pin.group}:${pin.name} → ${pin.forcedVersion}")
+            }
+        }
+        logger.lifecycle("")
+    }
+}
+
+tasks.named('check') {
+    dependsOn 'auditVersionPins'
+}
+
+// ── Pin Detection ──────────────────────────────────────────────────────────────
+
+/**
+ * Scans build.gradle text for eachDependency forced versions and ext property
+ * overrides that follow Spring Boot's naming convention.
+ */
+def detectVersionPins(Project project) {
+    def pins = []
+    def buildFile = project.file('build.gradle')
+    if (!buildFile.exists()) return pins
+
+    def lines = buildFile.readLines()
+
+    // Pattern 1: resolutionStrategy.eachDependency forced version blocks
+    String currentGroup = null
+    String currentName = null
+    boolean inIfBlock = false
+
+    lines.eachWithIndex { line, idx ->
+        def stripped = line.trim()
+
+        def ifMatch = (stripped =~ /if\s*\(\s*details\.requested\.group\s*==\s*['"]([^'"]+)['"]/)
+        if (ifMatch) {
+            currentGroup = ifMatch[0][1]
+            inIfBlock = true
+
+            def nameStartsWith = (stripped =~ /name\.startsWith\(\s*['"]([^'"]+)['"]\s*\)/)
+            def nameEquals = (stripped =~ /name\s*==\s*['"]([^'"]+)['"]/)
+            if (nameStartsWith) {
+                currentName = "${nameStartsWith[0][1]}*"
+            } else if (nameEquals) {
+                currentName = nameEquals[0][1]
+            }
+        }
+
+        if (inIfBlock) {
+            def versionMatch = (stripped =~ /details\.useVersion\s+['"]([^'"]+)['"]/)
+            if (versionMatch) {
+                def version = versionMatch[0][1]
+                def becauseLine = (stripped =~ /details\.because\s+['"]([^'"]+)['"]/)
+                def reason = becauseLine ? becauseLine[0][1] : null
+
+                if (!reason) {
+                    for (int i = idx + 1; i < Math.min(idx + 3, lines.size()); i++) {
+                        def nextBecause = (lines[i].trim() =~ /details\.because\s+['"]([^'"]+)['"]/)
+                        if (nextBecause) {
+                            reason = nextBecause[0][1]
+                            break
+                        }
+                    }
+                }
+
+                pins << [
+                    group: currentGroup,
+                    name: currentName ?: '*',
+                    forcedVersion: version,
+                    reason: reason ?: 'no reason given',
+                    type: 'eachDependency'
+                ]
+            }
+
+            if (stripped.contains('}')) {
+                inIfBlock = false
+                currentGroup = null
+                currentName = null
+            }
+        }
+    }
+
+    // Pattern 2: ext.set version overrides that are security pins
+    // Only flags properties with CVE/GHSA/security comments to distinguish from normal version declarations.
+    lines.each { line ->
+        def stripped = line.trim()
+        Matcher extMatcher = (stripped =~ /set\(\s*['"]([^'"]+)\.version['"]\s*,\s*['"]([^'"]+)['"]\s*\)/)
+        if (extMatcher.find()) {
+            def artifactHint = extMatcher.group(1)
+            def version = extMatcher.group(2)
+            def commentMatch = (stripped =~ /\/\/\s*(.+)$/)
+            def comment = commentMatch ? commentMatch[0][1].trim() : null
+
+            if (comment && (comment.toUpperCase().contains('CVE') ||
+                            comment.toUpperCase().contains('GHSA') ||
+                            comment.toLowerCase().contains('security'))) {
+                pins << [
+                    group: artifactHint,
+                    name: artifactHint,
+                    forcedVersion: version,
+                    reason: comment,
+                    type: 'extProperty'
+                ]
+            }
+        }
+    }
+
+    return pins
+}
+
+// ── Spring Boot Version Detection ──────────────────────────────────────────────
+
+def detectSpringBootVersion(Project project) {
+    def buildFile = project.file('build.gradle')
+    if (!buildFile.exists()) return null
+
+    def match = (buildFile.text =~ /id\s+['"]org\.springframework\.boot['"]\s+version\s+['"]([^'"]+)['"]/)
+    return match ? match[0][1] : null
+}
+
+// ── Maven Central Queries ──────────────────────────────────────────────────────
+
+def fetchNewerSpringBootVersions(String currentVersion) {
+    def parts = currentVersion.tokenize('.')
+    if (parts.size() < 3) return []
+
+    def major = parts[0]
+    def minor = parts[1]
+
+    def versions = []
+
+    versions.addAll(fetchVersionsFromMavenCentral(
+        'org.springframework.boot',
+        'spring-boot-starter-parent',
+        "${major}.${minor}"
+    ))
+
+    def nextMinor = (minor as int) + 1
+    versions.addAll(fetchVersionsFromMavenCentral(
+        'org.springframework.boot',
+        'spring-boot-starter-parent',
+        "${major}.${nextMinor}"
+    ))
+
+    return versions
+        .findAll { isVersionNewer(it, currentVersion) }
+        .sort { a, b -> compareVersions(a, b) }
+}
+
+def fetchVersionsFromMavenCentral(String group, String artifact, String versionPrefix) {
+    def groupPath = group.replace('.', '/')
+    def metadataUrl = "https://repo1.maven.org/maven2/${groupPath}/${artifact}/maven-metadata.xml"
+
+    try {
+        def conn = new URL(metadataUrl).openConnection()
+        conn.connectTimeout = 5000
+        conn.readTimeout = 10000
+        def metadata = new XmlSlurper().parseText(conn.inputStream.text)
+        return metadata.versioning.versions.version
+            .collect { it.text() }
+            .findAll { it.startsWith(versionPrefix) }
+            .findAll { !it.contains('-SNAPSHOT') && !it.contains('-RC') && !it.contains('-M') }
+    } catch (Exception e) {
+        return []
+    }
+}
+
+// ── Detached Resolution ────────────────────────────────────────────────────────
+
+def resolveWithBom(Project project, String bootVersion, String group, String artifactName) {
+    def platformDep = project.dependencies.platform(
+        "org.springframework.boot:spring-boot-dependencies:${bootVersion}")
+
+    def resolveArtifact = artifactName.endsWith('*')
+        ? artifactName.replace('*', 'r4')
+        : artifactName
+
+    def targetDep = project.dependencies.create("${group}:${resolveArtifact}")
+
+    def detached = project.configurations.detachedConfiguration(platformDep, targetDep)
+    detached.transitive = true
+
+    try {
+        def resolved = detached.resolvedConfiguration.resolvedArtifacts.find {
+            it.moduleVersion.id.group == group &&
+            (artifactName.endsWith('*')
+                ? it.moduleVersion.id.name.startsWith(artifactName.replace('*', ''))
+                : it.moduleVersion.id.name == resolveArtifact)
+        }
+        return resolved?.moduleVersion?.id?.version
+    } catch (Exception e) {
+        return null
+    }
+}
+
+// ── Parent Dependency Upgrade Check ────────────────────────────────────────────
+
+/**
+ * For pins that target transitive dependencies (e.g., org.hl7.fhir.* forced to 6.9.0),
+ * checks whether upgrading the direct parent dependency (e.g., hapi-fhir-structures-r4)
+ * would bring in the pinned version transitively, eliminating the need for the force.
+ */
+def checkParentDependencyUpgrades(Project project, List pins) {
+    def results = []
+    def buildContent = project.file('build.gradle').text
+
+    pins.each { pin ->
+        def directDeps = findDirectDependencies(buildContent, pin.group)
+        if (directDeps.isEmpty()) return
+
+        def parentArtifact = directDeps.first()
+        def currentParentVersion = parentArtifact.version
+
+        def newerParentVersions = fetchNewerVersionsOf(
+            parentArtifact.group, parentArtifact.name, currentParentVersion
+        )
+
+        for (candidateVersion in newerParentVersions) {
+            def transitiveVersion = resolveTransitiveDep(
+                project, parentArtifact.group, parentArtifact.name,
+                candidateVersion, pin.group, pin.name
+            )
+
+            if (transitiveVersion && isVersionSufficient(transitiveVersion, pin.forcedVersion)) {
+                results << [
+                    pin: pin,
+                    parentGroup: parentArtifact.group,
+                    parentArtifact: parentArtifact.name,
+                    currentParentVersion: currentParentVersion,
+                    upgradeParentVersion: candidateVersion,
+                    transitiveVersion: transitiveVersion
+                ]
+                break
+            }
+        }
+    }
+
+    return results
+}
+
+def findDirectDependencies(String buildContent, String group) {
+    def deps = []
+    def seen = [] as Set
+    def quotedGroup = java.util.regex.Pattern.quote(group)
+
+    // Pattern: implementation "group:artifact:${varName}"
+    Matcher varMatcher = buildContent =~ /(?:implementation|api|compileOnly)\s+["']${quotedGroup}:([^:'"]+):\$\{(\w+)\}["']/
+    while (varMatcher.find()) {
+        def artifactName = varMatcher.group(1)
+        def varName = varMatcher.group(2)
+        Matcher varValue = buildContent =~ /set\(\s*['"]${varName}['"]\s*,\s*['"]([^'"]+)['"]\s*\)/
+        if (varValue.find()) {
+            def key = "${group}:${artifactName}"
+            if (!seen.contains(key)) {
+                seen << key
+                deps << [group: group, name: artifactName, version: varValue.group(1)]
+            }
+        }
+    }
+
+    // Pattern: implementation "group:artifact:1.2.3" (literal version, no variable)
+    Matcher litMatcher = buildContent =~ /(?:implementation|api|compileOnly)\s+['"]${quotedGroup}:([^:'"]+):([^'"\$]+)['"]/
+    while (litMatcher.find()) {
+        def key = "${group}:${litMatcher.group(1)}"
+        if (!seen.contains(key)) {
+            seen << key
+            deps << [group: group, name: litMatcher.group(1), version: litMatcher.group(2)]
+        }
+    }
+
+    return deps
+}
+
+def fetchNewerVersionsOf(String group, String artifact, String currentVersion) {
+    def parts = currentVersion.tokenize('.')
+    if (parts.size() < 2) return []
+
+    def major = parts[0]
+    def minor = parts[1]
+
+    def versions = []
+    versions.addAll(fetchVersionsFromMavenCentral(group, artifact, "${major}.${minor}"))
+    def nextMinor = (minor as int) + 1
+    versions.addAll(fetchVersionsFromMavenCentral(group, artifact, "${major}.${nextMinor}"))
+
+    return versions
+        .findAll { isVersionNewer(it, currentVersion) }
+        .sort { a, b -> compareVersions(a, b) }
+}
+
+def resolveTransitiveDep(Project project, String parentGroup, String parentArtifact,
+                          String parentVersion, String targetGroup, String targetName) {
+    def parentDep = project.dependencies.create("${parentGroup}:${parentArtifact}:${parentVersion}")
+    def detached = project.configurations.detachedConfiguration(parentDep)
+    detached.transitive = true
+
+    try {
+        def resolveTarget = targetName.endsWith('*')
+            ? targetName.replace('*', 'r4')
+            : targetName
+
+        def resolved = detached.resolvedConfiguration.resolvedArtifacts.find {
+            it.moduleVersion.id.group == targetGroup &&
+            (targetName.endsWith('*')
+                ? it.moduleVersion.id.name.startsWith(targetName.replace('*', ''))
+                : it.moduleVersion.id.name == resolveTarget)
+        }
+        return resolved?.moduleVersion?.id?.version
+    } catch (Exception e) {
+        return null
+    }
+}
+
+// ── Version Comparison ─────────────────────────────────────────────────────────
+
+def isVersionSufficient(String resolved, String required) {
+    return compareVersions(resolved, required) >= 0
+}
+
+def isVersionNewer(String candidate, String current) {
+    return compareVersions(candidate, current) > 0
+}
+
+def compareVersions(String a, String b) {
+    def normalize = { String v ->
+        v.replace('.RELEASE', '')
+         .replace('.Final', '')
+         .tokenize('.')
+         .collect { it.isInteger() ? it as int : 0 }
+    }
+    def aParts = normalize(a)
+    def bParts = normalize(b)
+    def maxLen = Math.max(aParts.size(), bParts.size())
+
+    for (int i = 0; i < maxLen; i++) {
+        def aVal = i < aParts.size() ? aParts[i] : 0
+        def bVal = i < bParts.size() ? bParts[i] : 0
+        if (aVal != bVal) return aVal <=> bVal
+    }
+    return 0
+}
+
+def pinKey(Map pin) {
+    return "${pin.group}:${pin.name}"
+}

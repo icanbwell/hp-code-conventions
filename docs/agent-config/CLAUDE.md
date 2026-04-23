@@ -30,6 +30,15 @@ Always run `./gradlew downloadAllDocs` before your first commit on a branch. If 
 - `./gradlew itest` - Run integration tests
 - `./gradlew build` - Full build
 - `./gradlew checkstyleMain` - Run checkstyle (if configured in the repo)
+- `./gradlew auditVersionPins` - Check if forced dependency pins can be removed by upgrading the Spring Boot BOM
+
+## Dependency Version Pin Hygiene
+
+The `auditVersionPins` task runs automatically as part of every `./gradlew build` via `check.dependsOn`. It logs a report of forced dependency pins and whether upgrading the Spring Boot BOM or a parent dependency would make them removable. It does not fail the build.
+
+When reviewing a PR or working locally, check the `auditVersionPins` output. If it reports removable pins, create a separate PR that bumps the BOM version and removes the stale pins. Do not bundle the BOM upgrade into the current ticket's PR unless the ticket specifically calls for it or the PR author desires and approves it.
+
+When adding a new forced version pin (via `resolutionStrategy.eachDependency` or `ext.set`), always include a `because` clause or inline comment with the CVE or GHSA identifier. This allows the audit task to track why the pin exists and when it can be removed.
 
 ## Test Structure
 
