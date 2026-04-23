@@ -128,6 +128,10 @@ tasks.register('auditVersionPins') {
     }
 }
 
+tasks.named('check') {
+    dependsOn 'auditVersionPins'
+}
+
 // ── Pin Detection ──────────────────────────────────────────────────────────────
 
 /**
