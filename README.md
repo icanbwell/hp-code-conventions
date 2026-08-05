@@ -8,6 +8,7 @@ Configure local Intellij IDE to point to this repo with the following configurat
 ## Reference documents
 - [Coding Standards](docs/standards/CODING_STANDARDS.md)
 - [Hexagonal architecture for Java projects](docs/standards/HEXAGONAL_ARCHITECTURE_FOR_JAVA_PROJECTS.md)
+- [root.io / rootio_patcher CI Troubleshooting](docs/standards/ROOTIO_CI_TROUBLESHOOTING.md) — also available as a Claude Code skill at [`.claude/skills/rootio-ci-troubleshooting/`](.claude/skills/rootio-ci-troubleshooting/SKILL.md)
 
 ## Agent Context
 These documents provide the context and guidelines for code reviews conducted by an AI agent.
