@@ -170,7 +170,7 @@ to the working directory) instead of `~/.npmrc`. Project config is always read r
     JFROG_READ_TOKEN: ${{ secrets.JFROG_READ_TOKEN }}
   run: |
     echo 'registry=https://artifacts.bwell.com/artifactory/api/npm/virtual-npm/' >> .npmrc
-    echo '//artifacts.bwell.com/artifactory/api/npm/virtual-npm/:_authToken=${JFROG_READ_TOKEN}' >> .npmrc
+    echo '//artifacts.bwell.com/artifactory/api/npm/virtual-npm/:_authToken=<the JFROG_READ_TOKEN env var>' >> .npmrc
     echo '//artifacts.bwell.com/artifactory/api/npm/virtual-npm/:always-auth=true' >> .npmrc
 ```
 
