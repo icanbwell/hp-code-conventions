@@ -253,3 +253,47 @@ even if they're unrelated to your change. Run `npm run format` (prettier `--writ
 is a purely mechanical, safe change (whitespace/quote-style only) — verify the diff really is
 formatting-only before committing, and flag transparently that you're fixing pre-existing drift as
 part of getting CI green, not because it's part of the PR's actual scope.
+
+## 10. JFrog username (an email address) breaks credential-URL parsing
+
+**Symptom:** a package-manager update step fails with an invalid-URL error while installing
+`rootio_patcher` in a custom Alpine/`apk`-based container setup (a *different* setup than this org's
+shared `icanbwell/actions/setup-rootio-patcher` action — that action uses apt's `auth.conf.d`
+login/password mechanism, not an embedded-credentials URL, so it isn't exposed to this specific bug;
+this applies if you or your team built your own install step that constructs a
+`https://user:token@host/...`-style URL directly).
+
+**Why:** `JFROG_READ_USER` is an email address, which itself contains an `@`. Embedded directly into a
+`https://<user>:<token>@<host>` credentials URL, that gives the URL a second `@` — the parser can't tell
+which one separates credentials from host, and the request fails or resolves to the wrong host entirely.
+
+**Fix:** percent-encode the `@` in the username (`%40`) before building the credentials string, e.g.
+`user%40company.com` instead of `user@company.com`. If you have any control over the setup, prefer a
+mechanism that takes username/password as separate fields (like apt's `auth.conf.d`, used by this org's
+shared action) over building a combined credentials URL by hand — it sidesteps this whole class of bug.
+
+*(Contributed by amandaglz, from a custom rootio_patcher install step outside the shared org action.)*
+
+## 11. Incremental lockfile updates can silently leave CVEs unpatched
+
+**Symptom:** `rootio_patcher npm remediate --dry-run` keeps reporting the same pending CVEs as still
+needing patches, even after you believed you'd already applied them in a prior round.
+
+**Why:** running `npm install --package-lock-only` on top of an *existing* lockfile doesn't reliably
+re-apply overrides to every already-resolved nested dependency path — it only revisits and updates the
+paths npm's resolver happens to touch during that incremental pass, which can leave some previously
+(and now incorrectly) resolved nested entries stale and unpatched. This is a sharper, more specific
+version of failure mode #3's advice (multiple `npm install` passes to settle) — the risk here isn't
+just "needs more passes," it's that an *incremental* update on an existing lockfile can leave real,
+unpatched CVEs behind indefinitely without erroring, because nothing forces those stale nested paths to
+be re-visited.
+
+**Fix:** don't rely on incremental updates when reconciling CVE patches. Delete `package-lock.json`
+entirely and force a fully fresh resolve, then verify with one more dry-run before trusting it:
+```bash
+rm package-lock.json
+npm install --package-lock-only          # inside the Debian/ARM64 container matching CI
+rootio_patcher npm remediate --package-manager=npm --dry-run   # should report "No patches needed"
+```
+
+*(Contributed by amandaglz.)*

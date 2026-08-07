@@ -1,4 +1,10 @@
-# root.io / rootio_patcher CI Troubleshooting
+# root.io CI Troubleshooting
+
+Two ecosystems in this org use root.io, via different mechanisms — check which one applies before
+reading further. This doc's numbered failure modes below are all **npm**; see
+[Java / Gradle](#java--gradle) for the Gradle-specific one.
+
+## npm / frontend repos
 
 `rootio_patcher` remediates CVE-vulnerable npm packages by rewriting them, via npm `overrides` in
 `package.json`, to `@rootio/*`-aliased patched builds served from JFrog Artifactory
@@ -146,3 +152,60 @@ token is actually set before assuming a credentials problem with the token itsel
 unrelated to your PR — will fail this check regardless of what you actually changed. Isolate whether a
 failure is pre-existing with `git stash` before assuming you caused it; if it is, you'll still need to
 run `npm run format` (prettier `--write`) to get CI green, since the check isn't diff-scoped.
+
+### 10. JFrog username (an email address) breaks credential-URL parsing
+
+Applies to custom Alpine/`apk`-based install setups that build a `https://user:token@host/...` URL by
+hand — not this org's shared `setup-rootio-patcher` action, which uses apt's `auth.conf.d` login/password
+mechanism and isn't exposed to this bug. `JFROG_READ_USER` is an email address, which itself contains an
+`@`; embedded in a credentials URL that gives it two `@` characters, so the parser can't tell which one
+separates credentials from host. **Fix:** percent-encode the `@` (`%40`) in the username, or better,
+prefer a setup that takes username/password as separate fields instead of a combined URL.
+
+### 11. Incremental lockfile updates can silently leave CVEs unpatched
+
+`rootio_patcher --dry-run` can keep reporting the same CVEs as pending even after you believe you've
+patched them, because `npm install --package-lock-only` run on top of an *existing* lockfile doesn't
+reliably re-apply overrides to every already-resolved nested dependency path — only the ones the
+resolver happens to revisit. This is sharper than failure mode #3's "run install a few more times"
+advice: an incremental update can leave real, unpatched CVEs behind indefinitely without ever erroring.
+**Fix:** delete `package-lock.json` and force a fully fresh resolve before trusting a dry-run result:
+```bash
+rm package-lock.json
+npm install --package-lock-only
+rootio_patcher npm remediate --package-manager=npm --dry-run   # should report "No patches needed"
+```
+
+## Java / Gradle
+
+Java/Gradle repos use the `io.root.patcher` Gradle plugin instead (introduced org-wide via the INE-837
+migration), patching dependencies to `io.root.*`-namespaced builds from
+`artifacts.bwell.com/artifactory/virtual-maven`. Unlike npm's static, ahead-of-time overrides, this
+plugin resolves patched versions **dynamically at build time** — so `gradle.lockfile` can drift out of
+sync with what it actually resolves today.
+
+**Symptom:** `:compileJava` fails with `Could not resolve all files for configuration
+':compileClasspath'`, naming a dependency "forced/substituted to a different version" than what's in
+the lockfile. Look a few lines earlier in the log for `Patching <dep>:<old-version> ->
+<dep>:<new-version>` — that's the plugin telling you a newer patch became available since the lockfile
+was generated.
+
+**Fix:** regenerate the lockfile, then verify with a real build:
+```bash
+./gradlew dependencies --write-locks
+./gradlew build
+```
+Caveat: if `itest` fails with `NoClassDefFoundError`/`ExceptionInInitializerError` around
+`GenericContainer`, that's an unrelated, pre-existing local Testcontainers sandbox limitation — verify
+the fix with `./gradlew test` (no Testcontainers) in isolation rather than assuming the relock didn't
+work.
+
+Confirmed live on `clinical-reasoning-orchestrator-service` PR #192, right after merging the INE-837
+migration in from `main`: the lockfile had `spring-webmvc`/`spring-expression` pinned at
+`6.2.17-root.io.3` while the plugin resolved both to `6.2.17-root.io.4`.
+
+**Unrelated but easy to conflate:** a GitHub Actions platform outage can produce symptoms that look
+identical to a stuck root.io CI run — jobs stuck `queued` for hours, `Failed to resolve action download
+info` / `Service Unavailable` before any of your own steps run, pushes not triggering new runs at all.
+Check `https://www.githubstatus.com/api/v2/incidents/unresolved.json` before assuming it's your code;
+retrying won't help until the incident resolves.

@@ -1,6 +1,6 @@
 ---
 name: rootio-ci-troubleshooting
-description: Diagnose and fix root.io CI failures in b.well (icanbwell org) repos — both npm-based frontend repos (rootio_patcher rewriting package.json overrides) and Java/Gradle repos (the io.root.patcher Gradle plugin). Covers cases where npm ci, a Gradle build, or the validate-packages job fails in CI (GitHub Actions) even though a local check looked clean, or where CVE-remediation changes seem to work locally but break the build job. Use this whenever the user mentions root.io, rootio_patcher, io.root.patcher, "npm ci failing in CI but not locally", ERESOLVE/EUSAGE errors on a PR after touching npm overrides, a Gradle "Could not resolve all files for configuration" error mentioning a -root.io. version suffix, or a build job failing right after a dependency/CVE-remediation change on an icanbwell repo. Also trigger proactively if you're already mid-troubleshooting a root.io CI failure and the fix isn't obvious — this skill has a symptom-to-root-cause map covering ten distinct, previously-confirmed failure modes across both ecosystems, several of which are very easy to misdiagnose as "flaky CI" or "architecture mismatch" when they're actually deterministic and fixable.
+description: Diagnose and fix root.io CI failures in b.well (icanbwell org) repos — both npm-based frontend repos (rootio_patcher rewriting package.json overrides) and Java/Gradle repos (the io.root.patcher Gradle plugin). Covers cases where npm ci, a Gradle build, or the validate-packages job fails in CI (GitHub Actions) even though a local check looked clean, or where CVE-remediation changes seem to work locally but break the build job. Use this whenever the user mentions root.io, rootio_patcher, io.root.patcher, "npm ci failing in CI but not locally", ERESOLVE/EUSAGE errors on a PR after touching npm overrides, a Gradle "Could not resolve all files for configuration" error mentioning a -root.io. version suffix, or a build job failing right after a dependency/CVE-remediation change on an icanbwell repo. Also trigger proactively if you're already mid-troubleshooting a root.io CI failure and the fix isn't obvious — this skill has a symptom-to-root-cause map covering twelve distinct, previously-confirmed failure modes across both ecosystems, several of which are very easy to misdiagnose as "flaky CI" or "architecture mismatch" when they're actually deterministic and fixable.
 argument-hint: "[repo-name] [PR-number] — e.g. 'web-playground 552', or just describe the CI error"
 disable-model-invocation: false
 allowed-tools: Bash, Read, Edit, Write, WebFetch
@@ -15,7 +15,7 @@ before reading further**:
 - **npm / frontend repos** — `rootio_patcher` rewrites `package.json` `overrides` ahead of time (a
   separate CLI step, committed into the repo) to `@rootio/*`-aliased builds from
   `artifacts.bwell.com/artifactory/api/npm/virtual-npm/`. See the section below and
-  `references/failure-modes.md` (9 failure modes).
+  `references/failure-modes.md` (11 failure modes).
 - **Java / Gradle repos** — the `io.root.patcher` Gradle plugin (introduced via the org-wide INE-837
   migration) resolves patched builds **dynamically at build time** from
   `artifacts.bwell.com/artifactory/virtual-maven`, with `gradle.lockfile` pinning the result. See
@@ -55,7 +55,7 @@ hope."
 ## Fast triage: match the error to a failure mode
 
 Read the exact error from `gh run view --repo <org>/<repo> --job <job-id> --log-failed` (or
-`--log-failed` on the specific failed step) before guessing. The error shape tells you which of the nine
+`--log-failed` on the specific failed step) before guessing. The error shape tells you which of the eleven
 failure modes in `references/failure-modes.md` you're looking at:
 
 | Error you're seeing | Likely failure mode | Read |
@@ -69,6 +69,8 @@ failure modes in `references/failure-modes.md` you're looking at:
 | `401 Unauthorized` or `403 Forbidden` fetching `npm.pkg.github.com/download/@icanbwell/...` | #5 (401, no token) or #7 (403, wrong token) | [#5](references/failure-modes.md#5-jfrogs-virtual-registry-passes-through-origin-urls-unchanged), [#7](references/failure-modes.md#7-github_tokens-package-read-access-is-granted-per-package) |
 | `E401`/`npm login` partway through an otherwise-progressing local install | #8 Missing local env var | [#8](references/failure-modes.md#8-jfrog_read_token-not-set-in-the-current-shell) |
 | `format:check` fails listing files you never touched | #9 Repo-wide format check | [#9](references/failure-modes.md#9-formatcheck-checks-the-whole-repo-not-just-the-diff) |
+| Invalid-URL error installing `rootio_patcher` in a custom Alpine/`apk` container setup (not the shared org action) | #10 JFrog username (email) breaks credential-URL parsing | [#10](references/failure-modes.md#10-jfrog-username-an-email-address-breaks-credential-url-parsing) |
+| `rootio_patcher --dry-run` keeps reporting the same CVEs as pending even after you thought you'd patched them | #11 Incremental lockfile update left CVEs unpatched | [#11](references/failure-modes.md#11-incremental-lockfile-updates-can-silently-leave-cves-unpatched) |
 
 ## The verification loop (do this before every push)
 
