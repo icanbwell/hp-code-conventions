@@ -52,6 +52,29 @@ thing that differs between your local run and CI's isn't the files, it's somethi
 (npm version, `.npmrc` resolution, GitHub token scope). Chase the actual mechanism, not "try again and
 hope."
 
+### Recommended local remediation order
+
+*(Confirmed by amandaglz.)* Run these in order — earlier steps make later ones diagnosable instead of
+confusing:
+
+```bash
+npm install
+npm run format          # should come clean; fix this first if it doesn't
+rootio_patcher npm remediate --package-manager=npm --dry-run
+# if it reports patches needed:
+rootio_patcher npm remediate --package-manager=npm --dry-run=false
+npm install
+npm run eslint
+```
+
+Doing `format` before the `rootio_patcher` dry-run matters because an already-dirty formatting state
+makes it harder to tell which diff lines came from your own changes versus the override rewrite.
+Running `eslint` last, after the second `npm install`, catches anything the override change disturbed
+(e.g. a package whose patched build changes its exports shape) without noise from unrelated formatting
+drift. See [failure-modes.md#2](references/failure-modes.md#2-the-cve-feed-is-a-moving-target) for what
+to do when the dry-run/install loop doesn't converge on the first pass — this is expected, not a sign
+you did something wrong.
+
 ## Fast triage: match the error to a failure mode
 
 Read the exact error from `gh run view --repo <org>/<repo> --job <job-id> --log-failed` (or
