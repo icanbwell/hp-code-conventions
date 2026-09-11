@@ -86,6 +86,20 @@ wait on, `rootio_patcher npm remediate --ignore=<pkg>@<version>` (or a `.rootioi
 suppress a specific CVE from the check, but treat this as a last resort requiring an explicit,
 named human sign-off, not something to reach for by default — it silences a real, unpatched
 vulnerability rather than fixing it, and the CI gate exists specifically to catch this class of thing.
+It also carries more than a CI-cosmetics risk: an unpatched CVE left in place is expected to fail the
+subsequent deployment-to-dev gate too, not just `validate-packages` — don't treat "PR is green" as the
+finish line if the ignore was only ever meant to be temporary.
+
+**Confirmed resolution timeline (same `web-playground` `postcss@8.4.31-aikido.4` example above):** the
+gap was not indefinite. It was still absent from the mirror when first checked, and confirmed present
+(via the same `npm view postcss@8.4.31-aikido.4 version` / raw packument query) later the same working
+session — on the order of hours, not days. Re-running the full remediation loop at that point converged
+cleanly (`rootio_patcher --dry-run` → "No patches needed") with no `--ignore` needed. Practical takeaway:
+prefer "wait and re-check the registry directly" over reaching for `--ignore` unless the team has an
+actual deadline that can't absorb a same-day retry — worth noting a previously-merged sibling PR was
+separately observed hitting this same gate around the same time, suggesting this mirror-lag pattern may
+recur more often than "rare edge case." If you see it recur, it's worth flagging to whoever owns the
+JFrog mirror as a frequency signal, even though the per-PR fix here doesn't change.
 
 ## 3. npm arborist convergence instability
 

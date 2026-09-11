@@ -111,7 +111,15 @@ cleanly). Don't block the PR on it — verify each patched version individually 
 prior working version (flat key *and* every nested per-parent copy), and install normally for the rest.
 `validate-packages` will keep flagging that one CVE until the mirror catches up — expected, not a bug.
 `rootio_patcher npm remediate --ignore=<pkg>@<version>` (or `.rootioignore`) can suppress it, but only
-with an explicit human sign-off — it silences a real CVE rather than fixing it.
+with an explicit human sign-off — it silences a real CVE rather than fixing it. An unpatched CVE also
+risks failing the deployment-to-dev gate later, not just this CI check.
+
+**Confirmed resolution timeline (same `postcss` example):** the gap wasn't indefinite — confirmed absent,
+then confirmed present via the same `npm view`/registry-packument check, within the same working session
+(hours, not days). Re-running the remediation loop then converged cleanly with no `--ignore` needed.
+Prefer waiting and re-checking the registry directly over reaching for `--ignore` unless there's a real
+deadline. A previously-merged sibling PR was separately seen hitting this same gate around the same
+time — if this recurs, it's worth flagging to whoever owns the JFrog mirror as a frequency signal.
 
 ### 3. npm arborist convergence instability
 
