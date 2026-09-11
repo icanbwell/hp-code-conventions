@@ -48,6 +48,20 @@ in this repo.
 4. **Only then** run `npm test` / `npm run lint` / `npm run format:check` / `npm run build`, commit, push.
 5. **After pushing, actually check real CI** rather than assuming local success transfers.
 
+### Recommended local remediation order
+
+*(Confirmed by amandaglz.)*
+
+```bash
+npm install
+npm run format          # should come clean; fix this first if it doesn't
+rootio_patcher npm remediate --package-manager=npm --dry-run
+# if it reports patches needed:
+rootio_patcher npm remediate --package-manager=npm --dry-run=false
+npm install
+npm run eslint
+```
+
 ## Failure modes
 
 ### 1. Redundant nested override shadowing a flat override
@@ -87,6 +101,17 @@ the override that actually won.
 time CI runs minutes later — new patches appear, or old patched versions get pulled from the registry
 (404s). Not a mistake on your part; re-run the convergence loop (`rootio_patcher npm remediate` → `npm
 install` → repeat until "No patches needed") and push again.
+
+**Confirmed variant — one package in a batch isn't published yet:** `--dry-run=false` can write
+overrides for every flagged package, then `npm install` `ETARGET`/`notarget`s on only one of them while
+its siblings install fine (live example: a `nanoid`/`postcss`/`rollup` batch on `web-playground` where
+`postcss@8.4.31-aikido.4` 404'd via `npm view` and a raw registry query while the other two resolved
+cleanly). Don't block the PR on it — verify each patched version individually with `npm view
+<pkg>@<version> version` before installing, revert just the unresolvable one's override(s) back to its
+prior working version (flat key *and* every nested per-parent copy), and install normally for the rest.
+`validate-packages` will keep flagging that one CVE until the mirror catches up — expected, not a bug.
+`rootio_patcher npm remediate --ignore=<pkg>@<version>` (or `.rootioignore`) can suppress it, but only
+with an explicit human sign-off — it silences a real CVE rather than fixing it.
 
 ### 3. npm arborist convergence instability
 
@@ -145,6 +170,14 @@ owner's own org-wide package read access rather than being subject to per-packag
 shell profile. Non-interactive shells don't automatically source it — if `npm install`/`npm ci` fails
 with `E401`/"npm login" errors partway through an otherwise-progressing install, check whether the
 token is actually set before assuming a credentials problem with the token itself.
+
+**Confirmed variant — a stale duplicate export shadows a working token:** a shell profile edited more
+than once can end up with two `export JFROG_READ_TOKEN=...` lines; the later one wins. That value can
+be valid for the npm registry while returning `401` specifically against the private-debian apt repo
+used to install `rootio_patcher` itself — `[ -z "$JFROG_READ_TOKEN" ]` reports it *is* set, masking the
+real issue. `grep -n JFROG_READ_TOKEN ~/.zshrc` to spot duplicates, and test each candidate value
+directly against the failing endpoint with `curl -u` rather than assuming "the token" is a single
+value.
 
 ### 9. `format:check` checks the whole repo, not just the diff
 
