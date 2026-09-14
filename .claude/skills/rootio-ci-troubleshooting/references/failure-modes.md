@@ -180,6 +180,34 @@ cover it for this specific package/version.
 **Fix:** configure GitHub Packages auth in the CI workflow (see #6 and #7 for how to do this
 correctly — there are two more traps in the naive version of this fix).
 
+**Confirmed contrasting variant — JFrog isn't the problem, a local `~/.npmrc` baked the URL in:**
+on `web-playground`, the same symptom (401 on `npm.pkg.github.com`, project `.npmrc` only configures
+JFrog) had a different root cause and a different, cheaper fix. A JFrog packument query for the exact
+`@scope/pkg/version/hash` that 401'd (`curl -u "$JFROG_READ_USER:$JFROG_READ_TOKEN" -o /dev/null -w
+'%{http_code}' https://artifacts.bwell.com/artifactory/api/npm/virtual-npm/download/@icanbwell/<pkg>/
+<version>/<hash>`) returned `200` — JFrog mirrors this tarball fine. The actual cause: whoever last
+regenerated `package-lock.json` had a personal `~/.npmrc` with `@icanbwell:registry=https://
+npm.pkg.github.com/` active at the time (common, since it's needed for local dev outside Docker/CI),
+which caused npm to resolve and lock those packages directly against GitHub Packages instead of JFrog's
+proxy. `npm ci` then fetches that exact baked-in URL regardless of what's active at install time — same
+mechanism npm-side as the JFrog-passthrough case above, but the origin of the bad URL is a local dev
+environment, not JFrog. Confirmed 2026-09-14: 29 `@icanbwell/*` lockfile entries were affected across a
+single lockfile regeneration (not just one package), silently breaking that repo's Docker-based deploy
+build for 3+ days before being caught (PR-level CI didn't catch it because its `actions/setup-node` step
+configures *both* JFrog and GitHub Packages credentials, masking the gap that the Docker build's
+JFrog-only `.npmrc` doesn't have).
+
+**Fix for this variant (cheaper than adding GH auth):** rewrite each affected `"resolved"` URL from
+`https://npm.pkg.github.com/download/<scope>/` to `https://artifacts.bwell.com/artifactory/api/npm/
+virtual-npm/download/<scope>/`, keeping the version and content-hash suffix unchanged — verify each one
+resolves (`200`, following the redirect) via the JFrog query above *before* trusting the rewrite, since
+this fix is only valid when JFrog actually does mirror the package (unlike the passthrough case above,
+where it doesn't). Then regenerate/verify with `npm ci --userconfig=/dev/null` to reproduce a
+JFrog-only view and confirm the fetch succeeds. **Prevention:** always regenerate `package-lock.json`
+with `npm install --userconfig=/dev/null` (or inside a container that only has the project's `.npmrc`),
+so the lockfile reflects what CI/Docker will actually see regardless of what's in your personal
+`~/.npmrc`.
+
 ## 6. actions/setup-node's `registry-url` silently breaks other `.npmrc` writes
 
 **Symptom:** after adding GitHub Packages auth (`registry-url` + `scope` on the `actions/setup-node@v6`

@@ -147,6 +147,20 @@ ci` fetches the *exact* URL stored in the lockfile, never re-resolving at instal
 that fetch succeeds depends on whether the *active* `.npmrc` at CI-install-time has credentials for
 whatever host got baked in at generation time, not on which registry generated it.
 
+**Confirmed contrasting variant — JFrog isn't at fault, a local `~/.npmrc` baked the URL in:** same
+symptom, different root cause. On `web-playground`, a direct JFrog packument query for the exact
+package/version/hash that 401'd returned `200` — JFrog mirrors it fine. The real cause: whoever last
+regenerated `package-lock.json` had a personal `~/.npmrc` with `@icanbwell:registry=https://
+npm.pkg.github.com/` active, so npm resolved those packages against GitHub Packages directly instead of
+JFrog. Confirmed 2026-09-14: 29 lockfile entries affected in one regeneration, silently broke that
+repo's Docker-based deploy for 3+ days (PR CI didn't catch it — its `actions/setup-node` step configures
+*both* registries, masking the JFrog-only gap the Docker build actually has). **Fix (cheaper than adding
+GH auth):** rewrite the affected `"resolved"` URLs from `npm.pkg.github.com/download/<scope>/` to
+`artifacts.bwell.com/artifactory/api/npm/virtual-npm/download/<scope>/`, verifying each one returns
+`200` first — only valid when JFrog actually mirrors the package. **Prevention:** regenerate lockfiles
+with `npm install --userconfig=/dev/null` so they reflect what CI/Docker will see, not your personal
+`~/.npmrc`.
+
 ### 6. `actions/setup-node`'s `registry-url` silently breaks other `.npmrc` writes
 
 When given a `registry-url` input (needed to configure GitHub Packages auth via `scope` +
