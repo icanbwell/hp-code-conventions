@@ -1,6 +1,6 @@
 ---
 name: rootio-ci-troubleshooting
-description: Diagnose and fix root.io CI failures in b.well (icanbwell org) repos — both npm-based frontend repos (rootio_patcher rewriting package.json overrides) and Java/Gradle repos (the io.root.patcher Gradle plugin). Covers cases where npm ci, a Gradle build, or the validate-packages job fails in CI (GitHub Actions) even though a local check looked clean, or where CVE-remediation changes seem to work locally but break the build job. Use this whenever the user mentions root.io, rootio_patcher, io.root.patcher, "npm ci failing in CI but not locally", ERESOLVE/EUSAGE errors on a PR after touching npm overrides, a Gradle "Could not resolve all files for configuration" error mentioning a -root.io. version suffix, or a build job failing right after a dependency/CVE-remediation change on an icanbwell repo. Also trigger proactively if you're already mid-troubleshooting a root.io CI failure and the fix isn't obvious — this skill has a symptom-to-root-cause map covering twelve distinct, previously-confirmed failure modes across both ecosystems, several of which are very easy to misdiagnose as "flaky CI" or "architecture mismatch" when they're actually deterministic and fixable.
+description: Diagnose and fix root.io CI failures in b.well (icanbwell org) repos — npm-based frontend repos (rootio_patcher rewriting package.json overrides), Java/Gradle repos (the io.root.patcher Gradle plugin), and Python/pip repos (rootio_patcher pip remediate against a static requirements.txt pin). Covers cases where npm ci, a Gradle build, a pip-based CI job, or the validate-packages job fails in CI (GitHub Actions) even though a local check looked clean, or where CVE-remediation changes seem to work locally but break the build job. Use this whenever the user mentions root.io, rootio_patcher, io.root.patcher, "npm ci failing in CI but not locally", ERESOLVE/EUSAGE errors on a PR after touching npm overrides, a Gradle "Could not resolve all files for configuration" error mentioning a -root.io. version suffix, a "Validate dependencies are Root.io hardened" / rootio_patcher pip remediate step failing in a Python repo's deploy workflow, or a build job failing right after a dependency/CVE-remediation change on an icanbwell repo. Also trigger proactively if you're already mid-troubleshooting a root.io CI failure and the fix isn't obvious — this skill has a symptom-to-root-cause map covering confirmed failure modes across all three ecosystems, several of which are very easy to misdiagnose as "flaky CI" or "architecture mismatch" when they're actually deterministic and fixable.
 argument-hint: "[repo-name] [PR-number] — e.g. 'web-playground 552', or just describe the CI error"
 disable-model-invocation: false
 allowed-tools: Bash, Read, Edit, Write, WebFetch
@@ -20,6 +20,11 @@ before reading further**:
   migration) resolves patched builds **dynamically at build time** from
   `artifacts.bwell.com/artifactory/virtual-maven`, with `gradle.lockfile` pinning the result. See
   `references/java-gradle-failure-modes.md`.
+- **Python / pip repos** — like npm, a static, ahead-of-time pin — but hand-edited directly in a
+  CI-only `requirements.txt` (no CLI rewrite step committed as a diff), to `<pkg>==<version>+aikido.N`
+  builds from `artifacts.bwell.com/artifactory/api/pypi/virtual-pypi/simple`. `rootio_patcher pip
+  remediate --dry-run` is invoked as its own workflow step with no `continue-on-error`, so a pending
+  patch hard-fails the whole job rather than just warning. See `references/pip-failure-modes.md`.
 
 The dynamic-vs-static difference matters: npm's overrides don't silently drift (you have to explicitly
 re-run `rootio_patcher` to pick up new patches), but Gradle's plugin can resolve a *different* patched
@@ -110,12 +115,28 @@ This section will grow as more Java/Gradle-specific failure modes get confirmed 
 isn't listed here, add it once you've root-caused it, following the same pattern as the npm entries
 (exact symptom, why it happens, diagnostic commands, fix).
 
+## Python / pip repos
+
+Confirmed on `bsights-cql`. Static, ahead-of-time pins like npm's — no dynamic build-time resolution
+like Gradle's plugin — but hand-edited directly in a CI-only `requirements.txt`, not rewritten by a
+committed CLI-generated diff the way npm's `overrides` are.
+
+| Error you're seeing | Failure mode |
+|---|---|
+| A step like "Validate dependencies are Root.io hardened" fails, and every later step in the job (tests, publish, deploy) never runs, even ones with `if: always()` | [`rootio_patcher pip remediate --dry-run` hard-fails the job — no `continue-on-error`](references/pip-failure-modes.md#1-rootio_patcher-pip-remediate---dry-run-hard-fails-the-whole-job--no-continue-on-error) — fix: bump the named package's pin, exact version from the dry-run's own output, in the `requirements.txt` the failing job actually installs from |
+| You bumped a version pin but CI still reports the same CVE as unpatched | [Two unrelated files can both "pin" the same package name](references/pip-failure-modes.md#2-two-unrelated-files-can-both-pin-the-same-package-name--dont-edit-the-wrong-one) — confirm which file the failing step's install step actually reads from before assuming the pin didn't take |
+
+Read `references/pip-failure-modes.md` for the full diagnosis — including an open gap (no confirmed way
+to verify a target `+aikido.N` build actually exists on JFrog before pushing, without JFrog read
+credentials this session didn't have).
+
 ## If you're stuck after checking the triage table
 
-Read `references/failure-modes.md` (npm) or `references/java-gradle-failure-modes.md` (Java/Gradle) in
-full — each entry includes the exact diagnostic commands used to confirm it (not just the fix), because
-confirming *which* mechanism is actually happening, rather than pattern-matching to the nearest-sounding
-fix, is what makes the difference between resolving this in one push versus five.
+Read `references/failure-modes.md` (npm), `references/java-gradle-failure-modes.md` (Java/Gradle), or
+`references/pip-failure-modes.md` (Python/pip) in full — each entry includes the exact diagnostic
+commands used to confirm it (not just the fix), because confirming *which* mechanism is actually
+happening, rather than pattern-matching to the nearest-sounding fix, is what makes the difference between
+resolving this in one push versus five.
 
 If none of the npm modes match, the next places to look, in order:
 1. Compare your repo's `.github/workflows/ci.yml` against a known-working sibling repo's (e.g.
