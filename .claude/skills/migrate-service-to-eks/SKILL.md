@@ -1,6 +1,6 @@
 ---
 name: migrate-service-to-eks
-description: Migrates a Java service's dev environment from the legacy dev-ue1 cluster to dev-use1-eks (bwell-app 3.x, ArgoCD) in one PR. The PR adds the 3.x dev values, makes every merge deploy to the new EKS dev, stops deploying to dev-ue1, and scales its pods to zero. Fixes the known chart guards up front and renders the chart locally before the PR opens. Use when asked to "migrate X to EKS", "move X to dev-use1-eks", "bwell-app 3.x dev migration in one PR", or "retire dev-ue1 for X". Dev only. Does not touch stg, prd, sbx, perf or client-sandbox, and never deletes files.
+description: Migrates a Java service's dev environment from the legacy dev-ue1 cluster to dev-use1-eks (bwell-app 3.x, ArgoCD) in one PR. The PR adds the 3.x dev values, makes every merge deploy to the new EKS dev, stops deploying to dev-ue1, and sets the dev-ue1 values to zero replicas (applied by one manual legacy deploy after merge). Fixes the known chart guards up front and renders the chart locally before the PR opens. Use when asked to "migrate X to EKS", "move X to dev-use1-eks", "bwell-app 3.x dev migration in one PR", or "retire dev-ue1 for X". Dev only. Does not touch stg, prd, sbx, perf or client-sandbox, and never deletes files.
 argument-hint: "[service-name or repo path] - e.g. 'activity-service'"
 disable-model-invocation: false
 allowed-tools: Bash, Read, Edit, Write, WebFetch
@@ -8,7 +8,7 @@ allowed-tools: Bash, Read, Edit, Write, WebFetch
 
 # Migrate a service to EKS dev, in one PR
 
-One branch, one commit, one PR. Merging it means: the 3.x dev values exist, every merge deploys to `dev-use1-eks`, merges no longer deploy to `dev-ue1`, and the `dev-ue1` pods are scaled to zero.
+One branch, one commit, one PR. Merging it means: the 3.x dev values exist, every merge deploys to `dev-use1-eks`, merges no longer deploy to `dev-ue1`, and the `dev-ue1` values are set to zero replicas. The pods only scale down when the developer runs one manual legacy deploy after merge (post-merge checklist, item 1).
 
 This skill owns the whole flow. It does not invoke `migrate-bwell-app-3x` or `adopt-continuous-deployments`. It reads only the reference data of `migrate-bwell-app-3x` (see References).
 
@@ -89,7 +89,7 @@ These are render guards that the plugin's rules review does not catch. Each one 
 2. In the root `dev-ue1.values.yaml`, add `replicaCount: 0` and `castai: {enabled: false}`, and set `autoscaling.enabled: false`. All three are required. The chart ignores `replicaCount` while `castai.enabled` is true (its default).
 3. This edits existing files. It deletes nothing.
 4. Disclose, do not ask. The PR Notes and the final summary both say:
-   1. Merging scales dev-ue1 to zero.
+   1. Merging does not scale dev-ue1 down. With `deploy-dev-ue1: false` the legacy deploy job is skipped on merge, so the zero-replica values apply only after the developer dispatches `deploy.yml` with `env: dev` and the merged build's tag.
    2. While both clusters are up, they share Kafka consumer groups and split partitions.
    3. Route 53 cutover for the friendly domains is CIE's. Callers outside the new cluster may still resolve to dev-ue1 until CIE moves the records.
 
@@ -128,13 +128,14 @@ On failure, show the shortest decisive error line, fix the values, and rerun. Ma
 
 ## Post-merge checklist (print it, do not run it)
 
-1. The IAM role `dev-use1-irsa-<serviceName>` exists in the dev account. CIE provisions it.
-2. URLs in secrets or other out-of-band config use `http://` where they target `bwell.zone`, and the Mongo `-pl-1` endpoint.
-3. ArgoCD shows Synced and Healthy.
-4. The running pod's image tag equals the merged build's tag. This guards against the stale-manifest race.
-5. `https://<service>.dev-use1.bwell.zone/actuator/health` returns UP. Non-Spring services use their own health endpoint.
-6. Groundcover logs are clean, with no probe failures or restarts.
-7. Later, not now: remove the `dev-use1` host after cutover, coordinate DNS with CIE, delete the 2.x files once every env is migrated.
+1. Scale dev-ue1 to zero. Dispatch `deploy.yml` with `env: dev` and the merged build's tag. Afterwards confirm the dev-ue1 pods are gone and the dev-use1-eks pod still runs. This changes the live legacy cluster, so the developer does it.
+2. The IAM role `dev-use1-irsa-<serviceName>` exists in the dev account. CIE provisions it.
+3. URLs in secrets or other out-of-band config use `http://` where they target `bwell.zone`, and the Mongo `-pl-1` endpoint.
+4. ArgoCD shows Synced and Healthy.
+5. The running pod's image tag equals the merged build's tag. This guards against the stale-manifest race.
+6. `https://<service>.dev-use1.bwell.zone/actuator/health` returns UP. Non-Spring services use their own health endpoint.
+7. Groundcover logs are clean, with no probe failures or restarts.
+8. Later, not now: remove the `dev-use1` host after cutover, coordinate DNS with CIE, delete the 2.x files once every env is migrated.
 
 ## References
 
