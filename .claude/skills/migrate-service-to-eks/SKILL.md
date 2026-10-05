@@ -63,7 +63,7 @@ Apply the rules in `reference/migration-rules.md` (see References). In short:
 1. `environment` becomes `clusterName: dev-use1-eks`.
 2. Remove `iamRole`. The role is derived as `dev-use1-irsa-<serviceName>`.
 3. Flatten the nested `bwell:` map.
-4. Restructure autoscaling to `autoscaling.horizontal.type` using the mapping table in `migration-rules.md` section 5, driven only by what this service's own 2.x file says. Do not copy another service's autoscaling block (for example analytics-sync-service's `native` 1/1). When the 2.x file does not specify a value, follow the table. Raise it to the developer if the table cannot decide (see the CAST AI default in Step 2).
+4. Restructure autoscaling to `autoscaling.horizontal.type` using the mapping table in `migration-rules.md` section 5, driven only by what this service's own 2.x file says. Do not copy another service's autoscaling block (for example analytics-sync-service's `native` 1/1). When the 2.x file does not specify a value, follow the table. Raise it to the developer if the table cannot decide. CAST AI is on by default, so when the 2.x file leaves `castai` unset, ask before choosing a replica count below what runs live.
 5. Ingress: keep the friendly host, add a `<service>.dev-use1.bwell.zone` host with the same `paths`, remove any `-ue1` host, give every host a `paths` array.
 6. Dependency URLs: `https://` to `http://` on `bwell.zone` hosts. Bump Mongo `-pl-0` to `-pl-1`, and add `-pl-1` to bare Atlas hostnames. Map Cosmo/WunderGraph hosts to their in-cluster services.
 7. Removed features with real config (`persistence`, `microservice`, `snapshot`) are raised to the developer as decisions. Never delete silently.

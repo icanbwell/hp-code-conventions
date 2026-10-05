@@ -43,9 +43,3 @@ Notes must always state: dev-only scope, that no file was deleted, and the dev-u
 `trigger_deploy`: never
 
 Keep these as `true` and `never` unless the team has agreed to change them. They are the safety gates of the skill.
-
-## Team service list
-
-`owned_services_source`: none set
-
-Optional. Point this at the team's list of owned services (a file in the team repo or a Confluence page) so the skill can warn when asked to migrate a service the team does not own. Leave unset to skip the check.
