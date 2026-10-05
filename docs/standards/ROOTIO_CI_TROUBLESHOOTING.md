@@ -48,6 +48,20 @@ in this repo.
 4. **Only then** run `npm test` / `npm run lint` / `npm run format:check` / `npm run build`, commit, push.
 5. **After pushing, actually check real CI** rather than assuming local success transfers.
 
+### Recommended local remediation order
+
+*(Confirmed by amandaglz.)*
+
+```bash
+npm install
+npm run format          # should come clean; fix this first if it doesn't
+rootio_patcher npm remediate --package-manager=npm --dry-run
+# if it reports patches needed:
+rootio_patcher npm remediate --package-manager=npm --dry-run=false
+npm install
+npm run eslint
+```
+
 ## Failure modes
 
 ### 1. Redundant nested override shadowing a flat override
@@ -88,6 +102,25 @@ time CI runs minutes later — new patches appear, or old patched versions get p
 (404s). Not a mistake on your part; re-run the convergence loop (`rootio_patcher npm remediate` → `npm
 install` → repeat until "No patches needed") and push again.
 
+**Confirmed variant — one package in a batch isn't published yet:** `--dry-run=false` can write
+overrides for every flagged package, then `npm install` `ETARGET`/`notarget`s on only one of them while
+its siblings install fine (live example: a `nanoid`/`postcss`/`rollup` batch on `web-playground` where
+`postcss@8.4.31-aikido.4` 404'd via `npm view` and a raw registry query while the other two resolved
+cleanly). Don't block the PR on it — verify each patched version individually with `npm view
+<pkg>@<version> version` before installing, revert just the unresolvable one's override(s) back to its
+prior working version (flat key *and* every nested per-parent copy), and install normally for the rest.
+`validate-packages` will keep flagging that one CVE until the mirror catches up — expected, not a bug.
+`rootio_patcher npm remediate --ignore=<pkg>@<version>` (or `.rootioignore`) can suppress it, but only
+with an explicit human sign-off — it silences a real CVE rather than fixing it. An unpatched CVE also
+risks failing the deployment-to-dev gate later, not just this CI check.
+
+**Confirmed resolution timeline (same `postcss` example):** the gap wasn't indefinite — confirmed absent,
+then confirmed present via the same `npm view`/registry-packument check, within the same working session
+(hours, not days). Re-running the remediation loop then converged cleanly with no `--ignore` needed.
+Prefer waiting and re-checking the registry directly over reaching for `--ignore` unless there's a real
+deadline. A previously-merged sibling PR was separately seen hitting this same gate around the same
+time — if this recurs, it's worth flagging to whoever owns the JFrog mirror as a frequency signal.
+
 ### 3. npm arborist convergence instability
 
 With a large override count, a single `npm install` pass can produce a lockfile that fails a strict,
@@ -113,6 +146,20 @@ through the origin registry's own tarball URL rather than rewriting it to point 
 ci` fetches the *exact* URL stored in the lockfile, never re-resolving at install time — so whether
 that fetch succeeds depends on whether the *active* `.npmrc` at CI-install-time has credentials for
 whatever host got baked in at generation time, not on which registry generated it.
+
+**Confirmed contrasting variant — JFrog isn't at fault, a local `~/.npmrc` baked the URL in:** same
+symptom, different root cause. On `web-playground`, a direct JFrog packument query for the exact
+package/version/hash that 401'd returned `200` — JFrog mirrors it fine. The real cause: whoever last
+regenerated `package-lock.json` had a personal `~/.npmrc` with `@icanbwell:registry=https://
+npm.pkg.github.com/` active, so npm resolved those packages against GitHub Packages directly instead of
+JFrog. Confirmed 2026-09-14: 29 lockfile entries affected in one regeneration, silently broke that
+repo's Docker-based deploy for 3+ days (PR CI didn't catch it — its `actions/setup-node` step configures
+*both* registries, masking the JFrog-only gap the Docker build actually has). **Fix (cheaper than adding
+GH auth):** rewrite the affected `"resolved"` URLs from `npm.pkg.github.com/download/<scope>/` to
+`artifacts.bwell.com/artifactory/api/npm/virtual-npm/download/<scope>/`, verifying each one returns
+`200` first — only valid when JFrog actually mirrors the package. **Prevention:** regenerate lockfiles
+with `npm install --userconfig=/dev/null` so they reflect what CI/Docker will see, not your personal
+`~/.npmrc`.
 
 ### 6. `actions/setup-node`'s `registry-url` silently breaks other `.npmrc` writes
 
@@ -145,6 +192,14 @@ owner's own org-wide package read access rather than being subject to per-packag
 shell profile. Non-interactive shells don't automatically source it — if `npm install`/`npm ci` fails
 with `E401`/"npm login" errors partway through an otherwise-progressing install, check whether the
 token is actually set before assuming a credentials problem with the token itself.
+
+**Confirmed variant — a stale duplicate export shadows a working token:** a shell profile edited more
+than once can end up with two `export JFROG_READ_TOKEN=...` lines; the later one wins. That value can
+be valid for the npm registry while returning `401` specifically against the private-debian apt repo
+used to install `rootio_patcher` itself — `[ -z "$JFROG_READ_TOKEN" ]` reports it *is* set, masking the
+real issue. `grep -n JFROG_READ_TOKEN ~/.zshrc` to spot duplicates, and test each candidate value
+directly against the failing endpoint with `curl -u` rather than assuming "the token" is a single
+value.
 
 ### 9. `format:check` checks the whole repo, not just the diff
 
