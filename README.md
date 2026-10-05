@@ -9,6 +9,7 @@ Configure local Intellij IDE to point to this repo with the following configurat
 - [Coding Standards](docs/standards/CODING_STANDARDS.md)
 - [Hexagonal architecture for Java projects](docs/standards/HEXAGONAL_ARCHITECTURE_FOR_JAVA_PROJECTS.md)
 - [root.io / rootio_patcher CI Troubleshooting](docs/standards/ROOTIO_CI_TROUBLESHOOTING.md) — also available as a Claude Code skill at [`.claude/skills/rootio-ci-troubleshooting/`](.claude/skills/rootio-ci-troubleshooting/SKILL.md)
+- [Migrate a service to EKS dev (bwell-app 3.x)](.claude/skills/migrate-service-to-eks/SKILL.md) — Claude Code skill that migrates a Java service's dev environment to `dev-use1-eks` and prepares the dev-ue1 scale-down in one PR. Team defaults (branch, commit, PR format) live in [`conventions.md`](.claude/skills/migrate-service-to-eks/conventions.md)
 
 ## Agent Context
 These documents provide the context and guidelines for code reviews conducted by an AI agent.
