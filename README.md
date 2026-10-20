@@ -27,6 +27,6 @@ Templates for AI agent instruction files that are downloaded into each Java repo
 ## Shared Gradle scripts
 Scripts in [`gradle/`](gradle/) are downloaded into each Java repo by the `downloadAllDocs` task and applied from `build.gradle`.
 - [`audit-version-pins.gradle`](gradle/audit-version-pins.gradle) - `auditVersionPins`: reports forced dependency pins that a newer BOM would make removable (warns only).
-- [`check-rootio-ignores.gradle`](gradle/check-rootio-ignores.gradle) - `checkRootioIgnores`: HEADs each `.rootioignore` entry's jar in Artifactory and **fails `check`/`build`** when the artifact is now published (the ignore is stale). Use `-ProotioIgnoreWarnOnly=true` to report without failing, `-ProotioIgnoreSkip=true` to skip. Network errors and missing credentials never fail the build.
+- [`check-rootio-ignores.gradle`](gradle/check-rootio-ignores.gradle) - `checkRootioIgnores`: HEADs each `.rootioignore` entry's jar in Artifactory and **fails `check`/`build`** when the artifact is now published (the ignore is stale). Use `-ProotioIgnoreWarnOnly=true` to report without failing, `-ProotioIgnoreSkip=true` to skip. Network errors and missing credentials never fail the build. Jar-packaged artifacts only; compatible with the configuration cache.
 
-Tests for these scripts live in [`gradle-tests/`](gradle-tests/) (Gradle TestKit + a stub Artifactory). Run with JDK 17-21: `cd gradle-tests && gradle test`.
+Tests for these scripts live in [`gradle-tests/`](gradle-tests/) (Gradle TestKit + a stub Artifactory) and run in CI via [`gradle-tests.yml`](.github/workflows/gradle-tests.yml). Locally, with JDK 17-21: `cd gradle-tests && ./gradlew test`.
