@@ -1,0 +1,167 @@
+/**
+ * Check Root.io Ignores — detects entries in .rootioignore whose patched artifact is now
+ * published to our Artifactory virtual-maven repo, meaning the ignore is stale and the
+ * dependency is silently running unpatched.
+ *
+ * Distributed via the downloadAllDocs pattern — each repo downloads this file into
+ * gradle/check-rootio-ignores.gradle and applies it locally:
+ *     if (file('gradle/check-rootio-ignores.gradle').exists()) { apply from: 'gradle/check-rootio-ignores.gradle' }
+ *
+ * Then run:
+ *   ./gradlew checkRootioIgnores
+ *
+ * For each non-comment line (group:artifact@version) the task sends a HEAD request for the .jar
+ * to <jfrogUrl>/<group path>/<artifact>/<version>/<artifact>-<version>.jar using
+ * gradle.ext.jfrogUrl / jfrogUser / jfrogToken (set in settings.gradle):
+ *   - jar 200            -> published, the entry is stale: FAILS the build (delete the line)
+ *   - jar 404            -> still unpublished, the entry is still needed
+ *   - anything else      -> could not verify (auth, 5xx, timeout, ...): reported, never fails
+ * A pom that is published while the jar is not is still "unpublished" (the zstd-jni case).
+ *
+ * Properties:
+ *   -ProotioIgnoreWarnOnly=true   report stale entries without failing the build
+ *   -ProotioIgnoreSkip=true       skip the check entirely
+ *
+ * Skipped when Gradle runs offline, when JFrog credentials are not configured, or when
+ * .rootioignore has no entries. Runs as part of `check` (and therefore `build`), not `test`.
+ */
+
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
+
+tasks.register('checkRootioIgnores') {
+    group = 'verification'
+    description = 'Fails if an entry in .rootioignore is now published to Artifactory and can be removed'
+
+    doLast {
+        if (project.findProperty('rootioIgnoreSkip') == 'true') {
+            logger.lifecycle("\n⚠ checkRootioIgnores skipped (-ProotioIgnoreSkip=true).")
+            return
+        }
+        if (gradle.startParameter.offline) {
+            logger.lifecycle("\n⚠ Gradle is in offline mode. Skipping checkRootioIgnores (requires Artifactory access).")
+            return
+        }
+
+        def ignoreFile = project.file('.rootioignore')
+        def parsed = parseRootioIgnore(ignoreFile)
+        parsed.malformed.each { bad ->
+            logger.warn("⚠ .rootioignore:${bad.line} malformed entry '${bad.text}' (expected group:artifact@version)")
+        }
+        if (parsed.entries.isEmpty()) {
+            logger.lifecycle("\n✓ No .rootioignore entries to check.")
+            return
+        }
+
+        def jfrogUrl = rootioIgnoreExt(gradle, 'jfrogUrl')
+        def jfrogUser = rootioIgnoreExt(gradle, 'jfrogUser')
+        def jfrogToken = rootioIgnoreExt(gradle, 'jfrogToken')
+        if (!jfrogUrl || !jfrogUser || !jfrogToken) {
+            logger.lifecycle("\n⚠ JFrog credentials not configured (gradle.ext.jfrogUrl/jfrogUser/jfrogToken). Skipping checkRootioIgnores.")
+            return
+        }
+        def authHeader = 'Basic ' + Base64.encoder.encodeToString("${jfrogUser}:${jfrogToken}".bytes)
+
+        def results = probeRootioIgnoreEntries(parsed.entries, jfrogUrl, authHeader)
+
+        def stale = results.findAll { it.state == 'STALE' }
+        def unknown = results.findAll { it.state == 'UNKNOWN' }
+        def needed = results.findAll { it.state == 'NEEDED' }
+
+        logger.lifecycle("\n── .rootioignore check ───────────────────────────")
+        needed.each { r ->
+            logger.lifecycle("  still needed   .rootioignore:${r.line}  ${r.coordinate}  (jar not published${r.pomStatus == 200 ? ', pom is' : ''})")
+        }
+        unknown.each { r ->
+            logger.lifecycle("  could not verify .rootioignore:${r.line}  ${r.coordinate}  (HTTP ${r.jarStatus > 0 ? r.jarStatus : 'connection error'})")
+        }
+        stale.each { r ->
+            logger.lifecycle("  STALE          .rootioignore:${r.line}  ${r.coordinate}  (jar is now published)")
+        }
+
+        if (!stale.isEmpty()) {
+            logger.lifecycle("")
+            logger.lifecycle("  These entries are published and no longer need ignoring, so the dependency is running unpatched.")
+            logger.lifecycle("  Action: delete the lines above from .rootioignore, then regenerate the lockfile:")
+            logger.lifecycle("      ./gradlew dependencies --write-locks")
+            logger.lifecycle("  (To report without failing: -ProotioIgnoreWarnOnly=true)")
+            if (project.findProperty('rootioIgnoreWarnOnly') != 'true') {
+                throw new GradleException("${stale.size()} stale .rootioignore entr${stale.size() == 1 ? 'y' : 'ies'} found: " +
+                        stale.collect { "${it.coordinate} (.rootioignore:${it.line})" }.join(', '))
+            }
+        }
+        logger.lifecycle("")
+    }
+}
+
+// Lazy match so wiring works whether the java/base plugin was applied before or after this script.
+tasks.matching { it.name == 'check' }.configureEach {
+    dependsOn 'checkRootioIgnores'
+}
+
+// ── Parsing ────────────────────────────────────────────────────────────────────
+
+/** Returns [entries: [[line, group, artifact, version, coordinate]], malformed: [[line, text]]]. */
+def parseRootioIgnore(File file) {
+    def entries = []
+    def malformed = []
+    if (!file.exists()) return [entries: entries, malformed: malformed]
+
+    file.readLines().eachWithIndex { raw, idx ->
+        def text = raw.trim()
+        if (text.isEmpty() || text.startsWith('#')) return
+        def m = (text =~ /^([^:@\s]+):([^:@\s]+)@(\S+)$/)
+        if (m.matches()) {
+            entries << [line: idx + 1, group: m.group(1), artifact: m.group(2), version: m.group(3), coordinate: text]
+        } else {
+            malformed << [line: idx + 1, text: text]
+        }
+    }
+    return [entries: entries, malformed: malformed]
+}
+
+// ── Artifactory probing ────────────────────────────────────────────────────────
+
+def rootioIgnoreExt(Gradle g, String name) {
+    return g.ext.has(name) ? g.ext.get(name) : null
+}
+
+def rootioIgnoreArtifactUrl(String baseUrl, Map entry, String extension) {
+    def base = baseUrl.endsWith('/') ? baseUrl[0..-2] : baseUrl
+    return "${base}/${entry.group.replace('.', '/')}/${entry.artifact}/${entry.version}/${entry.artifact}-${entry.version}.${extension}"
+}
+
+/** HEAD request; returns the HTTP status, or -1 when the request itself failed. Never throws. */
+def rootioIgnoreHeadStatus(String url, String authHeader) {
+    HttpURLConnection conn = null
+    try {
+        conn = (HttpURLConnection) new URL(url).openConnection()
+        conn.requestMethod = 'HEAD'
+        conn.connectTimeout = 5000
+        conn.readTimeout = 10000
+        conn.setRequestProperty('Authorization', authHeader)
+        return conn.responseCode
+    } catch (Exception ignored) {
+        return -1
+    } finally {
+        conn?.disconnect()
+    }
+}
+
+/** Probes entries in parallel. Adds state (STALE|NEEDED|UNKNOWN), jarStatus and pomStatus to each. */
+def probeRootioIgnoreEntries(List entries, String baseUrl, String authHeader) {
+    def pool = Executors.newFixedThreadPool(Math.min(8, entries.size()))
+    try {
+        def futures = entries.collect { entry ->
+            pool.submit({
+                def jarStatus = rootioIgnoreHeadStatus(rootioIgnoreArtifactUrl(baseUrl, entry, 'jar'), authHeader)
+                def pomStatus = jarStatus == 404 ? rootioIgnoreHeadStatus(rootioIgnoreArtifactUrl(baseUrl, entry, 'pom'), authHeader) : null
+                def state = jarStatus == 200 ? 'STALE' : (jarStatus == 404 ? 'NEEDED' : 'UNKNOWN')
+                return entry + [state: state, jarStatus: jarStatus, pomStatus: pomStatus]
+            } as Callable)
+        }
+        return futures.collect { it.get() }
+    } finally {
+        pool.shutdown()
+    }
+}

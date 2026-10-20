@@ -1,1 +1,5 @@
 .idea
+
+# Gradle test harness output (gradle-tests/)
+gradle-tests/build/
+gradle-tests/.gradle/
