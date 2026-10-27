@@ -248,10 +248,28 @@ real dependency graph (resolved via `pipenv`, for local dev) is a separate file 
 `urllib3==1.26.19+aikido.4`. Confirm which file the failing step actually installs from before editing —
 `grep -rn "<package>" **/*.txt **/Pipfile.lock` and cross-check against the workflow YAML.
 
-**Open gap:** unlike npm's local verification loop, there's no confirmed way to verify a target
-`+aikido.N` build actually exists on JFrog before pushing — doing so needs `ROOTIO_PKG_URL` /
-`ROOTIO_PIP_INDEX_URL` plus `JFROG_READ_USER`/`JFROG_READ_TOKEN` credentials that weren't available when
-this was root-caused. The `bsights-cql` fix was pushed on the dry-run output's word alone and only
-confirmed by a subsequent CI run. If you have JFrog read credentials, try
-`pip index versions <package> --index-url https://artifacts.bwell.com/artifactory/api/pypi/virtual-pypi/simple`
-before pushing, and update this doc with the confirmed command.
+**Where the package name is:** the failing step's raw log (search `Package:`), not the job summary, which
+only gives a count. This check can also go red with no change in your PR — a newly published advisory for a
+pinned package is enough.
+
+**Verify the patched build on JFrog before pushing (confirmed)** — the listing also shows which wheel tags
+exist, which predicts the compile failure below:
+```bash
+curl -s -u "$JFROG_READ_USER:$JFROG_READ_TOKEN" \
+  https://artifacts.bwell.com/artifactory/api/pypi/virtual-pypi/simple/<package>/ \
+  | grep -o '<package>-<version>[^"#<]*' | sort -u
+```
+
+**Gotcha — the patched build can need a newer transitive pin.** Every package in the CI-only
+`requirements.txt` is pinned exactly, so a patched build whose dependency bounds differ fails with
+`ResolutionImpossible` (`aiohttp 3.14.3+aikido.1 depends on yarl>=1.25.1` vs `yarl==1.24.5`). Bump the pin the
+error names, after checking it exists on JFrog.
+
+**Gotcha — no wheel for your Python means a source build, and the `main` runner has no `gcc`.** Symptom: a
+`.tar.gz` download followed by `No such file or directory: 'gcc'` / `Failed building wheel`. For the shared
+`validate-pip-packages.yaml` job, pass `apt-packages: 'build-essential'`. Every other workflow that runs
+`pip install -r` on the same file on the same runner label needs its own compiler step (not yet verified for
+the `bsights-cql` deploy workflows — test one before merging).
+
+Full detail, with the exact log lines:
+[`pip-failure-modes.md`](../../.claude/skills/rootio-ci-troubleshooting/references/pip-failure-modes.md).

@@ -43,18 +43,23 @@ exact version the dry-run output names, e.g.:
 ```
 Confirmed fix on `bsights-cql` PR #596 for `AIKIDO-2026-499214`.
 
-**Open gap, flagged rather than papered over:** unlike the npm side's verification loop (`rm -rf
-node_modules && npm ci`, repeatable locally against the real registry), there is no confirmed local
-reproduction path for this yet — `rootio_patcher pip remediate --dry-run` needs `ROOTIO_PKG_URL` /
-`ROOTIO_PIP_INDEX_URL` pointed at JFrog's `virtual-pypi` index plus `JFROG_READ_USER`/`JFROG_READ_TOKEN`
-credentials that weren't available in the session that found this fix. That means the exact target version
-named in a dry-run's output was trusted at face value and pushed without confirming the patched build
-actually exists on JFrog first — the real proof only came from a subsequent CI run. If you have JFrog read
-credentials, verify before pushing:
+**Where the package name is:** the failing step's raw log, not the job summary. The "Validate Packages"
+job summary only says "found N vulnerable package(s)"; the step log above it prints the dry-run output
+(`Package: aiohttp @ 3.14.3`, `Patch (Non-Aliased): aiohttp @ 3.14.3+aikido.1`, `CVEs Fixed: [...]`). Search
+the raw log for `Package:`. This check can also turn red with **no change in your PR** — a new advisory
+published for a pinned package is enough (seen on `bsights-cql` PR #635: it passed on one commit and failed
+on the next, with only workflow files changed).
+
+**Verify the target build exists on JFrog before pushing (confirmed):** list the files the virtual index
+serves for the package, using the same read credentials CI uses:
 ```bash
-pip index versions <package> --index-url https://artifacts.bwell.com/artifactory/api/pypi/virtual-pypi/simple
+curl -s -u "$JFROG_READ_USER:$JFROG_READ_TOKEN" \
+  https://artifacts.bwell.com/artifactory/api/pypi/virtual-pypi/simple/<package>/ \
+  | grep -o '<package>-<version>[^"#<]*' | sort -u
 ```
-If you confirm this works, update this entry with the confirmed command and remove this caveat.
+The listing also shows **which file types exist** (wheel tags like `cp311`, or only an sdist `.tar.gz`) —
+read it before pushing, because that predicts failure mode #4 below. (`pip index versions` was suggested
+earlier and has not been tried.)
 
 ## 2. Two unrelated files can both "pin" the same package name — don't edit the wrong one
 
@@ -72,3 +77,61 @@ unrelated version numbers on purpose — they serve different install paths. Bef
 confirm which file the failing workflow's own "Install Python dependencies" (or equivalent) step actually
 installs from — `grep -rn "<package>" **/*.txt **/Pipfile.lock` across the repo and check each hit against
 the workflow YAML, don't assume there's only one place a package could be pinned.
+
+## 3. The patched build needs a newer transitive pin than `requirements.txt` has — `ResolutionImpossible`
+
+**Symptom:** after bumping a package to its `+aikido.N` build, the "Install Python dependencies" step fails
+before any root.io check runs:
+```
+ERROR: Cannot install -r requirements.txt (line 17) and yarl==1.24.5 because these package versions have conflicting dependencies.
+    aiohttp 3.14.3+aikido.1 depends on yarl<2.0 and >=1.25.1
+ERROR: ResolutionImpossible
+```
+
+**Root cause:** a CI-only `requirements.txt` pins *every* package exactly (including transitive ones), so pip
+has no room to move a dependency. A root.io-patched build can carry different dependency bounds than the
+upstream release it patches. Here `aiohttp==3.14.3` accepted `yarl==1.24.5`; `aiohttp==3.14.3+aikido.1`
+requires `yarl>=1.25.1`.
+
+**Fix:** bump the conflicting pin named in the error to a version that satisfies it, after checking that
+version is on JFrog (same `curl` listing as in #1). Then re-run — the bump can surface a *new* dry-run
+finding or another conflict, so expect to iterate. Confirmed on `bsights-cql` PR #635 (`yarl` 1.24.5 → 1.25.1).
+
+## 4. The patched build has no wheel for the runner's Python — pip compiles from source and `gcc` is missing
+
+**Symptom:** the install step downloads a `.tar.gz` (not a `.whl`) for the patched package and dies in a
+compile:
+```
+Downloading aiohttp-3.14.3%2Baikido.1.tar.gz
+  gcc ... -c aiohttp/_http_parser.c
+  error: [Errno 2] No such file or directory: 'gcc'
+ERROR: Failed building wheel for aiohttp
+```
+
+**Root cause:** root.io-patched builds are published to JFrog separately from upstream's wheels, and not for
+every Python version. `aiohttp 3.14.3+aikido.1` had an sdist and a single `cp313` wheel — nothing for the
+`cp311` that the repo's workflows use (`python-version: '3.11'`). Pip falls back to the sdist, which compiles
+C extensions, and the runner label `main` has no C compiler. Upstream's `3.14.3` has prebuilt cp311 wheels,
+which is why this only appears once the patched pin is applied.
+
+**Fix for the shared validation job (confirmed):** the reusable workflow
+`icanbwell/actions/.github/workflows/validate-pip-packages.yaml` takes an `apt-packages` input — pass the
+compiler there:
+```yaml
+  validate-packages:
+    uses: icanbwell/actions/.github/workflows/validate-pip-packages.yaml@<sha>
+    with:
+      python-version: '3.11'
+      apt-packages: 'build-essential'   # patched aiohttp has no cp311 wheel
+```
+Confirmed on `bsights-cql` PR #635 (`Validate Packages` went green; the log shows
+`Successfully installed ... aiohttp-3.14.3+aikido.1`).
+
+**Not covered by that fix — check every other install site:** any workflow that runs `pip install -r` on the
+same `requirements.txt` on the same runner label (deploy/publish jobs, in `bsights-cql`: seven workflows)
+hits the same missing compiler, and `apt-packages` only affects the reusable validation job. Whether those
+jobs fail is **not yet verified** — confirm by running one (a dry-run of a standalone workflow that installs
+the same file is enough) before merging a PR that adds such a pin, or add an `apt-get install -y
+build-essential` step before their pip install. Other options, not tried: a Python version the patched
+build ships a wheel for (here cp313 — risky when other pins are old, e.g. `pydantic==1.10.4`), or asking
+whoever publishes the patched builds to publish a wheel for your Python version.

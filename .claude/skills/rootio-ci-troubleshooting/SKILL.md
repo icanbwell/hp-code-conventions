@@ -125,10 +125,12 @@ committed CLI-generated diff the way npm's `overrides` are.
 |---|---|
 | A step like "Validate dependencies are Root.io hardened" fails, and every later step in the job (tests, publish, deploy) never runs, even ones with `if: always()` | [`rootio_patcher pip remediate --dry-run` hard-fails the job — no `continue-on-error`](references/pip-failure-modes.md#1-rootio_patcher-pip-remediate---dry-run-hard-fails-the-whole-job--no-continue-on-error) — fix: bump the named package's pin, exact version from the dry-run's own output, in the `requirements.txt` the failing job actually installs from |
 | You bumped a version pin but CI still reports the same CVE as unpatched | [Two unrelated files can both "pin" the same package name](references/pip-failure-modes.md#2-two-unrelated-files-can-both-pin-the-same-package-name--dont-edit-the-wrong-one) — confirm which file the failing step's install step actually reads from before assuming the pin didn't take |
+| After bumping to a `+aikido.N` pin, install fails with `ResolutionImpossible` / "conflicting dependencies" naming another pinned package | [The patched build needs a newer transitive pin](references/pip-failure-modes.md#3-the-patched-build-needs-a-newer-transitive-pin-than-requirementstxt-has--resolutionimpossible) — bump the pin the error names (check it exists on JFrog first) |
+| Install downloads a `.tar.gz` for the patched package, then `error: [Errno 2] No such file or directory: 'gcc'` / `Failed building wheel` | [No wheel for the runner's Python, so pip compiles and `gcc` is missing](references/pip-failure-modes.md#4-the-patched-build-has-no-wheel-for-the-runners-python--pip-compiles-from-source-and-gcc-is-missing) — pass `apt-packages: 'build-essential'` to the validation workflow, and check every other job that installs the same file |
 
-Read `references/pip-failure-modes.md` for the full diagnosis — including an open gap (no confirmed way
-to verify a target `+aikido.N` build actually exists on JFrog before pushing, without JFrog read
-credentials this session didn't have).
+Read `references/pip-failure-modes.md` for the full diagnosis. The package name and target version are in the
+failing step's raw log (search `Package:`), not the job summary; verify the patched build — and which wheel
+tags it ships — on JFrog with the `curl` listing in failure mode #1 before pushing a pin.
 
 ## If you're stuck after checking the triage table
 
