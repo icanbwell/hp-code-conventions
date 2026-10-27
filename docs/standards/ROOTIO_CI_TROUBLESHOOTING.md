@@ -221,8 +221,8 @@ are; engineers hand-edit the pinned version string directly in a CI-only `requir
 
 **Symptom:** a step like "Validate dependencies are Root.io hardened" (running `rootio_patcher pip
 remediate --dry-run`) fails with a non-zero exit, and every later step in the same job — tests, library
-validation, an actual publish/deploy step — never runs, even ones with `if: always()`. The job simply
-stops at the failed step.
+validation, an actual publish/deploy step — is skipped (only steps with `if: always()` or `if: failure()`
+still run).
 
 **Why:** `--dry-run` signals "a patch is needed" by exiting non-zero rather than warning and exiting 0.
 If the workflow step has no `continue-on-error: true` (as on `bsights-cql`), that's a hard step failure
@@ -246,7 +246,7 @@ real dependency graph (resolved via `pipenv`, for local dev) is a separate file 
 `Pipfile.lock` pins `urllib3==2.7.0` (unrelated, untouched by root.io) while
 `.github/workflows/scripts/requirements.txt` separately pins the root.io-relevant
 `urllib3==1.26.19+aikido.4`. Confirm which file the failing step actually installs from before editing —
-`grep -rn "<package>" **/*.txt **/Pipfile.lock` and cross-check against the workflow YAML.
+`grep -rn "<package>" --include='*.txt' --include='Pipfile.lock' .` and cross-check against the workflow YAML.
 
 **Where the package name is:** the failing step's raw log (search `Package:`), not the job summary, which
 only gives a count. This check can also go red with no change in your PR — a newly published advisory for a

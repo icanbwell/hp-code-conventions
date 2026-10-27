@@ -15,9 +15,9 @@ the pinned version string directly in `requirements.txt` when a patch is needed.
 ## 1. `rootio_patcher pip remediate --dry-run` hard-fails the whole job — no `continue-on-error`
 
 **Symptom:** a workflow step named something like "Validate dependencies are Root.io hardened" fails with
-exit code 2, and every step after it in the same job (tests, "Validate libraries", a downstream
-publish/deploy step) never runs at all — not even ones with `if: always()`, because the job's default
-`Report Results` gate never gets a chance to evaluate; the job stops immediately at the failed step.
+exit code 2, and every later step in the same job (tests, "Validate libraries", a downstream publish/deploy
+step) is skipped. Only steps with `if: always()` or `if: failure()` still run (on `bsights-cql`'s DEV Deploy the
+job's "Report Results" step ran after a failed install while the update/publish steps were skipped).
 
 **Root cause:** `--dry-run` mode's whole purpose is to *check* whether every pinned dependency is already on
 its latest root.io-hardened build, without applying anything — but it signals "a patch is needed" by
@@ -75,7 +75,7 @@ root.io-relevant pin, installed only in CI via `pip install -r .github/workflows
 in the "Install Python dependencies" step). These two files name the same package at two entirely different,
 unrelated version numbers on purpose — they serve different install paths. Before editing a version pin,
 confirm which file the failing workflow's own "Install Python dependencies" (or equivalent) step actually
-installs from — `grep -rn "<package>" **/*.txt **/Pipfile.lock` across the repo and check each hit against
+installs from — `grep -rn "<package>" --include='*.txt' --include='Pipfile.lock' .` across the repo and check each hit against
 the workflow YAML, don't assume there's only one place a package could be pinned.
 
 ## 3. The patched build needs a newer transitive pin than `requirements.txt` has — `ResolutionImpossible`

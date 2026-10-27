@@ -9,7 +9,7 @@ allowed-tools: Bash, Read, Edit, Write, WebFetch
 # root.io CI Troubleshooting
 
 root.io remediates CVE-vulnerable dependencies by rewriting them to patched builds served from JFrog
-Artifactory. Two ecosystems in this org use it, via two different mechanisms — **check which one applies
+Artifactory. Three ecosystems in this org use it, via three different mechanisms — **check which one applies
 before reading further**:
 
 - **npm / frontend repos** — `rootio_patcher` rewrites `package.json` `overrides` ahead of time (a
@@ -123,7 +123,7 @@ committed CLI-generated diff the way npm's `overrides` are.
 
 | Error you're seeing | Failure mode |
 |---|---|
-| A step like "Validate dependencies are Root.io hardened" fails, and every later step in the job (tests, publish, deploy) never runs, even ones with `if: always()` | [`rootio_patcher pip remediate --dry-run` hard-fails the job — no `continue-on-error`](references/pip-failure-modes.md#1-rootio_patcher-pip-remediate---dry-run-hard-fails-the-whole-job--no-continue-on-error) — fix: bump the named package's pin, exact version from the dry-run's own output, in the `requirements.txt` the failing job actually installs from |
+| A step like "Validate dependencies are Root.io hardened" fails, and every later step in the job (tests, publish, deploy) never runs | [`rootio_patcher pip remediate --dry-run` hard-fails the job — no `continue-on-error`](references/pip-failure-modes.md#1-rootio_patcher-pip-remediate---dry-run-hard-fails-the-whole-job--no-continue-on-error) — fix: bump the named package's pin, exact version from the dry-run's own output, in the `requirements.txt` the failing job actually installs from |
 | You bumped a version pin but CI still reports the same CVE as unpatched | [Two unrelated files can both "pin" the same package name](references/pip-failure-modes.md#2-two-unrelated-files-can-both-pin-the-same-package-name--dont-edit-the-wrong-one) — confirm which file the failing step's install step actually reads from before assuming the pin didn't take |
 | After bumping to a `+aikido.N` pin, install fails with `ResolutionImpossible` / "conflicting dependencies" naming another pinned package | [The patched build needs a newer transitive pin](references/pip-failure-modes.md#3-the-patched-build-needs-a-newer-transitive-pin-than-requirementstxt-has--resolutionimpossible) — bump the pin the error names (check it exists on JFrog first) |
 | Install downloads a `.tar.gz` for the patched package, then `error: [Errno 2] No such file or directory: 'gcc'` / `Failed building wheel` | [No wheel for the runner's Python, so pip compiles and `gcc` is missing](references/pip-failure-modes.md#4-the-patched-build-has-no-wheel-for-the-runners-python--pip-compiles-from-source-and-gcc-is-missing) — pass `apt-packages: 'build-essential'` to the validation workflow, and check every other job that installs the same file |
