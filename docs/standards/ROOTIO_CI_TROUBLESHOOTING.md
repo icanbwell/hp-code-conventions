@@ -1,8 +1,9 @@
 # root.io CI Troubleshooting
 
-Two ecosystems in this org use root.io, via different mechanisms — check which one applies before
+Three ecosystems in this org use root.io, via different mechanisms — check which one applies before
 reading further. This doc's numbered failure modes below are all **npm**; see
-[Java / Gradle](#java--gradle) for the Gradle-specific one.
+[Java / Gradle](#java--gradle) for the Gradle-specific one(s), and [Python / pip](#python--pip) for the
+pip-specific ones.
 
 ## npm / frontend repos
 
@@ -209,3 +210,66 @@ identical to a stuck root.io CI run — jobs stuck `queued` for hours, `Failed t
 info` / `Service Unavailable` before any of your own steps run, pushes not triggering new runs at all.
 Check `https://www.githubstatus.com/api/v2/incidents/unresolved.json` before assuming it's your code;
 retrying won't help until the incident resolves.
+
+## Python / pip
+
+Confirmed on `bsights-cql`. Like npm, this is a **static, ahead-of-time** pin — not Gradle's
+dynamic-at-build-time resolution — but there's no CLI-generated diff committed the way npm's `overrides`
+are; engineers hand-edit the pinned version string directly in a CI-only `requirements.txt`, e.g.
+`urllib3==1.26.19+aikido.4`, served from
+`artifacts.bwell.com/artifactory/api/pypi/virtual-pypi/simple`.
+
+**Symptom:** a step like "Validate dependencies are Root.io hardened" (running `rootio_patcher pip
+remediate --dry-run`) fails with a non-zero exit, and every later step in the same job — tests, library
+validation, an actual publish/deploy step — is skipped (only steps with `if: always()` or `if: failure()`
+still run).
+
+**Why:** `--dry-run` signals "a patch is needed" by exiting non-zero rather than warning and exiting 0.
+If the workflow step has no `continue-on-error: true` (as on `bsights-cql`), that's a hard step failure
+that halts the job immediately — a materially different failure shape than npm's `validate-packages`,
+which is its own independent reusable-workflow job. Here, one job typically does dependency install,
+root.io validation, tests, and the actual deploy/publish step in sequence, so a single stale pin silently
+blocks a deploy that otherwise has nothing wrong with it. The dry-run's own output names both versions
+directly, e.g. `urllib3 @ 1.26.19+aikido.4 needs urllib3 @ 1.26.19+aikido.5 (fixes AIKIDO-2026-499214)`.
+
+**Fix:** bump the named package to the exact version the dry-run names, in whichever `requirements.txt`
+the job's own "Install Python dependencies" step actually installs from:
+```diff
+-urllib3==1.26.19+aikido.4
++urllib3==1.26.19+aikido.5
+```
+Confirmed fix on `bsights-cql` PR #596.
+
+**Gotcha — two files can pin the same package at unrelated versions:** a `Pipfile.lock`-based repo's
+real dependency graph (resolved via `pipenv`, for local dev) is a separate file from a CI-only
+`requirements.txt` that a workflow installs from directly via plain `pip install -r`. On `bsights-cql`,
+`Pipfile.lock` pins `urllib3==2.7.0` (unrelated, untouched by root.io) while
+`.github/workflows/scripts/requirements.txt` separately pins the root.io-relevant
+`urllib3==1.26.19+aikido.4`. Confirm which file the failing step actually installs from before editing —
+`grep -rn "<package>" --include='*.txt' --include='Pipfile.lock' .` and cross-check against the workflow YAML.
+
+**Where the package name is:** the failing step's raw log (search `Package:`), not the job summary, which
+only gives a count. This check can also go red with no change in your PR — a newly published advisory for a
+pinned package is enough.
+
+**Verify the patched build on JFrog before pushing (confirmed)** — the listing also shows which wheel tags
+exist, which predicts the compile failure below:
+```bash
+curl -s -u "$JFROG_READ_USER:$JFROG_READ_TOKEN" \
+  https://artifacts.bwell.com/artifactory/api/pypi/virtual-pypi/simple/<package>/ \
+  | grep -o '<package>-<version>[^"#<]*' | sort -u
+```
+
+**Gotcha — the patched build can need a newer transitive pin.** Every package in the CI-only
+`requirements.txt` is pinned exactly, so a patched build whose dependency bounds differ fails with
+`ResolutionImpossible` (`aiohttp 3.14.3+aikido.1 depends on yarl>=1.25.1` vs `yarl==1.24.5`). Bump the pin the
+error names, after checking it exists on JFrog.
+
+**Gotcha — no wheel for your Python means a source build, and the `main` runner has no `gcc`.** Symptom: a
+`.tar.gz` download followed by `No such file or directory: 'gcc'` / `Failed building wheel`. For the shared
+`validate-pip-packages.yaml` job, pass `apt-packages: 'build-essential'`. Every other workflow that runs
+`pip install -r` on the same file on the same runner label needs its own compiler step (not yet verified for
+the `bsights-cql` deploy workflows — test one before merging).
+
+Full detail, with the exact log lines:
+[`pip-failure-modes.md`](../../.claude/skills/rootio-ci-troubleshooting/references/pip-failure-modes.md).
