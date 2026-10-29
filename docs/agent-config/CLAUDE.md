@@ -1,6 +1,6 @@
 # Java Team Agent Instructions
 
-> **Scope:** Repo-level extension. Layers on top of the org-wide baseline in the root `CLAUDE.md`.
+> **Scope:** Repo-level extension. Layers on top of the b.well org instructions, which load in every Claude Code session through our Claude org's managed settings.
 > **Owner:** Java Services Team
 
 ## Java Team Standards
