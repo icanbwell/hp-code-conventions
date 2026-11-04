@@ -1,0 +1,27 @@
+name: Gradle script tests
+
+on:
+  pull_request:
+    paths:
+      - 'gradle/**'
+      - 'gradle-tests/**'
+      - '.github/workflows/gradle-tests.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'gradle/**'
+      - 'gradle-tests/**'
+      - '.github/workflows/gradle-tests.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Run Gradle script tests
+        working-directory: gradle-tests
+        run: ./gradlew test --console=plain
