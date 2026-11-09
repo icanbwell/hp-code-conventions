@@ -1,6 +1,6 @@
 # root.io CI failure modes — detailed reference
 
-Nine distinct, confirmed failure modes, in the order you're likely to hit them working through a
+Eleven distinct, confirmed failure modes, in the order you're likely to hit them working through a
 root.io remediation. Each entry includes what you'll actually see, why it happens, the diagnostic
 commands that confirmed it (not just the fix — reproducing the mechanism is what tells you you've
 actually found the cause, versus just guessing and getting lucky), and the fix.
@@ -60,6 +60,46 @@ stale by the time CI actually runs. This is not a mistake on your part.
 **Fix:** re-run the convergence loop: `rootio_patcher npm remediate --package-manager=npm
 --dry-run` (in a Debian/ARM64 container matching CI) → `npm install` → repeat until it reports "No
 patches needed." Push again.
+
+**Confirmed variant — one patch in a multi-package batch isn't published yet:** `rootio_patcher
+--dry-run=false` can successfully write overrides for *all* flagged packages, then `npm install` fails
+with `ETARGET` / `notarget` on only one of them, even though its sibling patches in the same run
+install fine. Live example on `web-playground`: a dry-run flagged `nanoid`, `postcss`, and `rollup`;
+after applying all three, `npm install` failed with `notarget No matching version found for
+postcss@8.4.31-aikido.4`, while `nanoid@3.3.8-aikido.2` and `rollup@3.29.5-aikido.1` installed cleanly
+in the same pass. Confirmed via direct lookup (`npm view postcss@8.4.31-aikido.4 version` also 404s,
+and a raw JFrog packument query for `postcss` returned zero `-aikido.*` versions at all) — the CVE
+database already knows about a fix build that JFrog hasn't finished mirroring yet. This is the same
+root cause as the general case above, just scoped to a single package instead of the whole batch, and
+short retries within one sitting won't necessarily resolve it (mirror sync can lag longer than a single
+troubleshooting session).
+
+**Fix for the variant:** don't block the whole PR on the one package that isn't resolvable yet.
+Individually verify each flagged package with `npm view <pkg>@<patched-version> version` *before*
+running `npm install` — for any that 404, revert just that package's override value(s) back to its
+prior (still-working) patched version everywhere it appears (flat override key *and* every nested
+per-parent override — `rootio_patcher` itself writes to all of them, so revert all of them the same
+way), then `npm install`/`npm ci` normally for the rest. Note this means `validate-packages` will keep
+reporting that one CVE as pending in every future CI run until the mirror catches up — that's expected,
+not a bug in your fix. If leaving it pending would fail a required check the team is not willing to
+wait on, `rootio_patcher npm remediate --ignore=<pkg>@<version>` (or a `.rootioignore` file) exists to
+suppress a specific CVE from the check, but treat this as a last resort requiring an explicit,
+named human sign-off, not something to reach for by default — it silences a real, unpatched
+vulnerability rather than fixing it, and the CI gate exists specifically to catch this class of thing.
+It also carries more than a CI-cosmetics risk: an unpatched CVE left in place is expected to fail the
+subsequent deployment-to-dev gate too, not just `validate-packages` — don't treat "PR is green" as the
+finish line if the ignore was only ever meant to be temporary.
+
+**Confirmed resolution timeline (same `web-playground` `postcss@8.4.31-aikido.4` example above):** the
+gap was not indefinite. It was still absent from the mirror when first checked, and confirmed present
+(via the same `npm view postcss@8.4.31-aikido.4 version` / raw packument query) later the same working
+session — on the order of hours, not days. Re-running the full remediation loop at that point converged
+cleanly (`rootio_patcher --dry-run` → "No patches needed") with no `--ignore` needed. Practical takeaway:
+prefer "wait and re-check the registry directly" over reaching for `--ignore` unless the team has an
+actual deadline that can't absorb a same-day retry — worth noting a previously-merged sibling PR was
+separately observed hitting this same gate around the same time, suggesting this mirror-lag pattern may
+recur more often than "rare edge case." If you see it recur, it's worth flagging to whoever owns the
+JFrog mirror as a frequency signal, even though the per-PR fix here doesn't change.
 
 ## 3. npm arborist convergence instability
 
@@ -139,6 +179,34 @@ cover it for this specific package/version.
 
 **Fix:** configure GitHub Packages auth in the CI workflow (see #6 and #7 for how to do this
 correctly — there are two more traps in the naive version of this fix).
+
+**Confirmed contrasting variant — JFrog isn't the problem, a local `~/.npmrc` baked the URL in:**
+on `web-playground`, the same symptom (401 on `npm.pkg.github.com`, project `.npmrc` only configures
+JFrog) had a different root cause and a different, cheaper fix. A JFrog packument query for the exact
+`@scope/pkg/version/hash` that 401'd (`curl -u "$JFROG_READ_USER:$JFROG_READ_TOKEN" -o /dev/null -w
+'%{http_code}' https://artifacts.bwell.com/artifactory/api/npm/virtual-npm/download/@icanbwell/<pkg>/
+<version>/<hash>`) returned `200` — JFrog mirrors this tarball fine. The actual cause: whoever last
+regenerated `package-lock.json` had a personal `~/.npmrc` with `@icanbwell:registry=https://
+npm.pkg.github.com/` active at the time (common, since it's needed for local dev outside Docker/CI),
+which caused npm to resolve and lock those packages directly against GitHub Packages instead of JFrog's
+proxy. `npm ci` then fetches that exact baked-in URL regardless of what's active at install time — same
+mechanism npm-side as the JFrog-passthrough case above, but the origin of the bad URL is a local dev
+environment, not JFrog. Confirmed 2026-09-14: 29 `@icanbwell/*` lockfile entries were affected across a
+single lockfile regeneration (not just one package), silently breaking that repo's Docker-based deploy
+build for 3+ days before being caught (PR-level CI didn't catch it because its `actions/setup-node` step
+configures *both* JFrog and GitHub Packages credentials, masking the gap that the Docker build's
+JFrog-only `.npmrc` doesn't have).
+
+**Fix for this variant (cheaper than adding GH auth):** rewrite each affected `"resolved"` URL from
+`https://npm.pkg.github.com/download/<scope>/` to `https://artifacts.bwell.com/artifactory/api/npm/
+virtual-npm/download/<scope>/`, keeping the version and content-hash suffix unchanged — verify each one
+resolves (`200`, following the redirect) via the JFrog query above *before* trusting the rewrite, since
+this fix is only valid when JFrog actually does mirror the package (unlike the passthrough case above,
+where it doesn't). Then regenerate/verify with `npm ci --userconfig=/dev/null` to reproduce a
+JFrog-only view and confirm the fetch succeeds. **Prevention:** always regenerate `package-lock.json`
+with `npm install --userconfig=/dev/null` (or inside a container that only has the project's `.npmrc`),
+so the lockfile reflects what CI/Docker will actually see regardless of what's in your personal
+`~/.npmrc`.
 
 ## 6. actions/setup-node's `registry-url` silently breaks other `.npmrc` writes
 
@@ -229,6 +297,27 @@ environment, the substitution resolves to empty and requests go out unauthentica
 ```
 
 **Fix:** `source ~/.zshrc` (or wherever it's exported) before running npm commands in a fresh shell.
+
+**Confirmed variant — a stale duplicate export shadows a working token:** if `~/.zshrc` (or
+equivalent) has been edited more than once and ended up with *two* `export JFROG_READ_TOKEN=...`
+lines, the later one wins — and it can be a token that still works fine against the npm registry
+(`artifacts.bwell.com/artifactory/api/npm/virtual-npm/`) while returning `401` specifically against
+the private-debian apt repo used to install `rootio_patcher` itself
+(`artifacts.bwell.com/artifactory/private-debian/dists/.../InRelease`). This looks identical to the
+token simply being unset, except `[ -z "$JFROG_READ_TOKEN" ]` reports it *is* set — the value is just
+wrong for that one endpoint. Confirmed live: an earlier `export` in the file (line 6) worked with
+`curl -u "$JFROG_READ_USER:$JFROG_READ_TOKEN" .../private-debian/dists/bookworm/InRelease` → `200`;
+a later duplicate export further down the same file (line 34, presumably added in a later edit without
+removing the first) → `401` on the identical request.
+
+**Diagnose:** `grep -n JFROG_READ_TOKEN ~/.zshrc` — more than one `export` line is the tell. Test each
+candidate value directly against the failing endpoint with `curl -u` before assuming the token itself
+is invalid or expired.
+
+**Fix:** test candidate tokens directly rather than assuming "the token" is a single value; use
+whichever one 200s for the specific host that's failing. Separately, flag the duplicate export to
+whoever owns that shell profile — deduplicating it prevents the next person (or the next tool run) from
+hitting the same 401 with no obvious cause.
 
 ## 9. format:check checks the whole repo, not just the diff
 
